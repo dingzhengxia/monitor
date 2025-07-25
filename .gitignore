@@ -4,3 +4,4 @@ app/services/__pycache__/
 app/tasks/__pycache__/
 monitor/__pycache__/
 .idea/
+monitor.log
