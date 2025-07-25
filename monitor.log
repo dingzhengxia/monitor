@@ -1,0 +1,272 @@
+2025-07-25 21:17:49 - app.tasks.signal_scanner - INFO - [MainThread] - ✅ 动态热点监控循环完成
+2025-07-25 21:17:49 - root - INFO - [MainThread] - 
+📌 首次运行市场报告...
+2025-07-25 21:17:49 - app.tasks.daily_reporter - INFO - [MainThread] - --- ☀️ 开始执行每日宏观市场报告 (合约市场) ---
+2025-07-25 21:17:49 - app.tasks.daily_reporter - INFO - [MainThread] -  (报告任务)正在更新热门币种缓存...
+2025-07-25 21:17:49 - app.tasks.daily_reporter - INFO - [MainThread] -  (报告任务)将获取排名前 300 的币种来更新缓存...
+2025-07-25 21:17:49 - app.services.data_fetcher - INFO - [MainThread] - ...正在从 binance 获取所有交易对的24h行情数据 (目标市场: swap)...
+2025-07-25 21:17:51 - app.services.data_fetcher - INFO - [MainThread] - ...获取成功，共 534 个ticker，正在筛选...
+2025-07-25 21:17:51 - app.services.data_fetcher - INFO - [MainThread] - ✅ 成功筛选出成交额排名前 300 的 SWAP USDT 交易对。
+2025-07-25 21:17:51 - app.tasks.daily_reporter - INFO - [MainThread] - ✅ (报告任务)热门币种缓存已更新，当前共监控 300 个交易对。
+2025-07-25 21:17:51 - app.tasks.daily_reporter - INFO - [MainThread] - ...正在基于 300 个热门合约生成报告...
+2025-07-25 21:18:40 - app.tasks.daily_reporter - INFO - [MainThread] - --- ✅ 每日宏观市场报告完成 ---
+2025-07-25 21:18:40 - apscheduler.scheduler - INFO - [MainThread] - Adding job tentatively -- it will be properly scheduled when the scheduler starts
+2025-07-25 21:18:40 - root - INFO - [MainThread] -    - 每日市场报告已添加，将在每天北京时间 08:30 运行。
+2025-07-25 21:18:40 - apscheduler.scheduler - INFO - [MainThread] - Adding job tentatively -- it will be properly scheduled when the scheduler starts
+2025-07-25 21:18:40 - root - INFO - [MainThread] -    - 动态热点监控任务已添加，每 15 分钟运行一次。
+2025-07-25 21:18:40 - root - INFO - [MainThread] - 
+📅 调度器已启动，请保持程序运行。按 Ctrl+C 退出。
+2025-07-25 21:18:40 - apscheduler.scheduler - INFO - [MainThread] - Added job "DailyReport" to job store "default"
+2025-07-25 21:18:40 - apscheduler.scheduler - INFO - [MainThread] - Added job "SignalCheckCycle" to job store "default"
+2025-07-25 21:18:40 - apscheduler.scheduler - INFO - [MainThread] - Scheduler started
+2025-07-25 21:18:40 - app.services.notification_service - INFO - [Thread-3 (notification_consumer)] - ✅ 桌面通知发送成功: 📰 2025-07-24 合约市场热点报告
+2025-07-25 21:18:40 - app.services.notification_service - INFO - [Thread-3 (notification_consumer)] - ✅ (队列)钉钉消息发送成功: 📰 2025-07-24 合约市场热点报告
+2025-07-25 21:26:49 - app.state - INFO - [MainThread] - ✅ 成功加载冷却状态。有效条目: 4 (从 5 个中加载)
+2025-07-25 21:26:49 - root - INFO - [MainThread] - 🚀 终极监控与信号程序已启动 (V46.1 - Bug修复版)
+2025-07-25 21:26:49 - root - INFO - [MainThread] - 📊 交易所: binance | 市场: swap | 间隔: 15 分钟
+2025-07-25 21:26:49 - root - INFO - [MainThread] - ✅ 通知队列消费者线程已启动。
+2025-07-25 21:26:49 - root - INFO - [MainThread] - 
+📌 首次运行主监控循环...
+2025-07-25 21:26:49 - app.tasks.signal_scanner - INFO - [MainThread] - ============================================================
+2025-07-25 21:26:49 - app.tasks.signal_scanner - INFO - [MainThread] - 🔄 开始执行动态热点监控循环...
+2025-07-25 21:26:49 - app.tasks.signal_scanner - INFO - [MainThread] - 缓存为空，首次获取热门币种列表...
+2025-07-25 21:26:49 - app.tasks.signal_scanner - INFO - [MainThread] -  (扫描任务)正在更新热门币种缓存...
+2025-07-25 21:26:49 - app.services.data_fetcher - INFO - [MainThread] - ...正在从 binance 获取所有交易对的24h行情数据 (目标市场: swap)...
+2025-07-25 21:26:52 - app.services.data_fetcher - INFO - [MainThread] - ...获取成功，共 534 个ticker，正在筛选...
+2025-07-25 21:26:52 - app.services.data_fetcher - INFO - [MainThread] - ✅ 成功筛选出成交额排名前 100 的 SWAP USDT 交易对。
+2025-07-25 21:26:52 - app.tasks.signal_scanner - INFO - [MainThread] - ✅ (扫描任务)热门币种缓存已更新，当前共监控 100 个交易对。
+2025-07-25 21:26:52 - app.tasks.signal_scanner - INFO - [MainThread] - 本轮将使用 100 个交易对进行并发扫描...
+2025-07-25 21:26:53 - app.analysis.strategies - ERROR - [Monitor_0] - ❌ 在 1000BONK/USDT:USDT 15m (高级量价突破) 中出错: find_price_interest_zones() takes from 1 to 3 positional arguments but 4 were given
+Traceback (most recent call last):
+  File "E:\python\freqtrade\binance_trader\app\analysis\strategies.py", line 224, in check_volume_breakout
+    price_zones = find_price_interest_zones(df.copy(), atr_group_mult, min_size, min_sep)
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: find_price_interest_zones() takes from 1 to 3 positional arguments but 4 were given
+2025-07-25 21:26:53 - app.analysis.strategies - ERROR - [Monitor_0] - ❌ 在 1000BONK/USDT:USDT 1h (高级量价突破) 中出错: find_price_interest_zones() takes from 1 to 3 positional arguments but 4 were given
+Traceback (most recent call last):
+  File "E:\python\freqtrade\binance_trader\app\analysis\strategies.py", line 224, in check_volume_breakout
+    price_zones = find_price_interest_zones(df.copy(), atr_group_mult, min_size, min_sep)
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: find_price_interest_zones() takes from 1 to 3 positional arguments but 4 were given
+2025-07-25 21:26:53 - app.analysis.strategies - ERROR - [Monitor_1] - ❌ 在 1000FLOKI/USDT:USDT 15m (高级量价突破) 中出错: find_price_interest_zones() takes from 1 to 3 positional arguments but 4 were given
+Traceback (most recent call last):
+  File "E:\python\freqtrade\binance_trader\app\analysis\strategies.py", line 224, in check_volume_breakout
+    price_zones = find_price_interest_zones(df.copy(), atr_group_mult, min_size, min_sep)
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: find_price_interest_zones() takes from 1 to 3 positional arguments but 4 were given
+2025-07-25 21:26:53 - app.analysis.strategies - ERROR - [Monitor_0] - ❌ 在 1000BONK/USDT:USDT 4h (高级量价突破) 中出错: find_price_interest_zones() takes from 1 to 3 positional arguments but 4 were given
+Traceback (most recent call last):
+  File "E:\python\freqtrade\binance_trader\app\analysis\strategies.py", line 224, in check_volume_breakout
+    price_zones = find_price_interest_zones(df.copy(), atr_group_mult, min_size, min_sep)
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: find_price_interest_zones() takes from 1 to 3 positional arguments but 4 were given
+2025-07-25 21:26:53 - app.analysis.strategies - ERROR - [Monitor_1] - ❌ 在 1000FLOKI/USDT:USDT 1h (高级量价突破) 中出错: find_price_interest_zones() takes from 1 to 3 positional arguments but 4 were given
+Traceback (most recent call last):
+  File "E:\python\freqtrade\binance_trader\app\analysis\strategies.py", line 224, in check_volume_breakout
+    price_zones = find_price_interest_zones(df.copy(), atr_group_mult, min_size, min_sep)
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: find_price_interest_zones() takes from 1 to 3 positional arguments but 4 were given
+2025-07-25 21:26:53 - app.analysis.strategies - ERROR - [Monitor_0] - ❌ 在 1000BONK/USDT:USDT 1d (高级量价突破) 中出错: find_price_interest_zones() takes from 1 to 3 positional arguments but 4 were given
+Traceback (most recent call last):
+  File "E:\python\freqtrade\binance_trader\app\analysis\strategies.py", line 224, in check_volume_breakout
+    price_zones = find_price_interest_zones(df.copy(), atr_group_mult, min_size, min_sep)
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: find_price_interest_zones() takes from 1 to 3 positional arguments but 4 were given
+2025-07-25 21:26:53 - app.analysis.strategies - ERROR - [Monitor_1] - ❌ 在 1000FLOKI/USDT:USDT 4h (高级量价突破) 中出错: find_price_interest_zones() takes from 1 to 3 positional arguments but 4 were given
+Traceback (most recent call last):
+  File "E:\python\freqtrade\binance_trader\app\analysis\strategies.py", line 224, in check_volume_breakout
+    price_zones = find_price_interest_zones(df.copy(), atr_group_mult, min_size, min_sep)
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: find_price_interest_zones() takes from 1 to 3 positional arguments but 4 were given
+2025-07-25 21:26:53 - app.analysis.strategies - ERROR - [Monitor_0] - ❌ 在 1000PEPE/USDT:USDT 15m (高级量价突破) 中出错: find_price_interest_zones() takes from 1 to 3 positional arguments but 4 were given
+Traceback (most recent call last):
+  File "E:\python\freqtrade\binance_trader\app\analysis\strategies.py", line 224, in check_volume_breakout
+    price_zones = find_price_interest_zones(df.copy(), atr_group_mult, min_size, min_sep)
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: find_price_interest_zones() takes from 1 to 3 positional arguments but 4 were given
+2025-07-25 21:26:54 - app.analysis.strategies - ERROR - [Monitor_1] - ❌ 在 1000FLOKI/USDT:USDT 1d (高级量价突破) 中出错: find_price_interest_zones() takes from 1 to 3 positional arguments but 4 were given
+Traceback (most recent call last):
+  File "E:\python\freqtrade\binance_trader\app\analysis\strategies.py", line 224, in check_volume_breakout
+    price_zones = find_price_interest_zones(df.copy(), atr_group_mult, min_size, min_sep)
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: find_price_interest_zones() takes from 1 to 3 positional arguments but 4 were given
+2025-07-25 21:26:54 - app.analysis.strategies - ERROR - [Monitor_0] - ❌ 在 1000PEPE/USDT:USDT 1h (高级量价突破) 中出错: find_price_interest_zones() takes from 1 to 3 positional arguments but 4 were given
+Traceback (most recent call last):
+  File "E:\python\freqtrade\binance_trader\app\analysis\strategies.py", line 224, in check_volume_breakout
+    price_zones = find_price_interest_zones(df.copy(), atr_group_mult, min_size, min_sep)
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: find_price_interest_zones() takes from 1 to 3 positional arguments but 4 were given
+2025-07-25 21:26:54 - app.analysis.strategies - ERROR - [Monitor_1] - ❌ 在 1000SHIB/USDT:USDT 15m (高级量价突破) 中出错: find_price_interest_zones() takes from 1 to 3 positional arguments but 4 were given
+Traceback (most recent call last):
+  File "E:\python\freqtrade\binance_trader\app\analysis\strategies.py", line 224, in check_volume_breakout
+    price_zones = find_price_interest_zones(df.copy(), atr_group_mult, min_size, min_sep)
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: find_price_interest_zones() takes from 1 to 3 positional arguments but 4 were given
+2025-07-25 21:26:54 - app.analysis.strategies - ERROR - [Monitor_0] - ❌ 在 1000PEPE/USDT:USDT 4h (高级量价突破) 中出错: find_price_interest_zones() takes from 1 to 3 positional arguments but 4 were given
+Traceback (most recent call last):
+  File "E:\python\freqtrade\binance_trader\app\analysis\strategies.py", line 224, in check_volume_breakout
+    price_zones = find_price_interest_zones(df.copy(), atr_group_mult, min_size, min_sep)
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: find_price_interest_zones() takes from 1 to 3 positional arguments but 4 were given
+2025-07-25 21:26:54 - app.analysis.strategies - ERROR - [Monitor_1] - ❌ 在 1000SHIB/USDT:USDT 1h (高级量价突破) 中出错: find_price_interest_zones() takes from 1 to 3 positional arguments but 4 were given
+Traceback (most recent call last):
+  File "E:\python\freqtrade\binance_trader\app\analysis\strategies.py", line 224, in check_volume_breakout
+    price_zones = find_price_interest_zones(df.copy(), atr_group_mult, min_size, min_sep)
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: find_price_interest_zones() takes from 1 to 3 positional arguments but 4 were given
+2025-07-25 21:26:54 - app.analysis.strategies - ERROR - [Monitor_0] - ❌ 在 1000PEPE/USDT:USDT 1d (高级量价突破) 中出错: find_price_interest_zones() takes from 1 to 3 positional arguments but 4 were given
+Traceback (most recent call last):
+  File "E:\python\freqtrade\binance_trader\app\analysis\strategies.py", line 224, in check_volume_breakout
+    price_zones = find_price_interest_zones(df.copy(), atr_group_mult, min_size, min_sep)
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: find_price_interest_zones() takes from 1 to 3 positional arguments but 4 were given
+2025-07-25 21:26:54 - app.analysis.strategies - ERROR - [Monitor_1] - ❌ 在 1000SHIB/USDT:USDT 4h (高级量价突破) 中出错: find_price_interest_zones() takes from 1 to 3 positional arguments but 4 were given
+Traceback (most recent call last):
+  File "E:\python\freqtrade\binance_trader\app\analysis\strategies.py", line 224, in check_volume_breakout
+    price_zones = find_price_interest_zones(df.copy(), atr_group_mult, min_size, min_sep)
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: find_price_interest_zones() takes from 1 to 3 positional arguments but 4 were given
+2025-07-25 21:26:54 - app.analysis.strategies - ERROR - [Monitor_0] - ❌ 在 AAVE/USDT:USDT 15m (高级量价突破) 中出错: find_price_interest_zones() takes from 1 to 3 positional arguments but 4 were given
+Traceback (most recent call last):
+  File "E:\python\freqtrade\binance_trader\app\analysis\strategies.py", line 224, in check_volume_breakout
+    price_zones = find_price_interest_zones(df.copy(), atr_group_mult, min_size, min_sep)
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: find_price_interest_zones() takes from 1 to 3 positional arguments but 4 were given
+2025-07-25 21:26:54 - app.analysis.strategies - ERROR - [Monitor_1] - ❌ 在 1000SHIB/USDT:USDT 1d (高级量价突破) 中出错: find_price_interest_zones() takes from 1 to 3 positional arguments but 4 were given
+Traceback (most recent call last):
+  File "E:\python\freqtrade\binance_trader\app\analysis\strategies.py", line 224, in check_volume_breakout
+    price_zones = find_price_interest_zones(df.copy(), atr_group_mult, min_size, min_sep)
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: find_price_interest_zones() takes from 1 to 3 positional arguments but 4 were given
+2025-07-25 21:26:55 - app.analysis.strategies - ERROR - [Monitor_0] - ❌ 在 AAVE/USDT:USDT 1h (高级量价突破) 中出错: find_price_interest_zones() takes from 1 to 3 positional arguments but 4 were given
+Traceback (most recent call last):
+  File "E:\python\freqtrade\binance_trader\app\analysis\strategies.py", line 224, in check_volume_breakout
+    price_zones = find_price_interest_zones(df.copy(), atr_group_mult, min_size, min_sep)
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: find_price_interest_zones() takes from 1 to 3 positional arguments but 4 were given
+2025-07-25 21:26:55 - app.analysis.strategies - ERROR - [Monitor_1] - ❌ 在 ADA/USDT:USDT 15m (高级量价突破) 中出错: find_price_interest_zones() takes from 1 to 3 positional arguments but 4 were given
+Traceback (most recent call last):
+  File "E:\python\freqtrade\binance_trader\app\analysis\strategies.py", line 224, in check_volume_breakout
+    price_zones = find_price_interest_zones(df.copy(), atr_group_mult, min_size, min_sep)
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: find_price_interest_zones() takes from 1 to 3 positional arguments but 4 were given
+2025-07-25 21:26:55 - app.analysis.strategies - ERROR - [Monitor_0] - ❌ 在 AAVE/USDT:USDT 4h (高级量价突破) 中出错: find_price_interest_zones() takes from 1 to 3 positional arguments but 4 were given
+Traceback (most recent call last):
+  File "E:\python\freqtrade\binance_trader\app\analysis\strategies.py", line 224, in check_volume_breakout
+    price_zones = find_price_interest_zones(df.copy(), atr_group_mult, min_size, min_sep)
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: find_price_interest_zones() takes from 1 to 3 positional arguments but 4 were given
+2025-07-25 21:26:55 - app.analysis.strategies - ERROR - [Monitor_1] - ❌ 在 ADA/USDT:USDT 1h (高级量价突破) 中出错: find_price_interest_zones() takes from 1 to 3 positional arguments but 4 were given
+Traceback (most recent call last):
+  File "E:\python\freqtrade\binance_trader\app\analysis\strategies.py", line 224, in check_volume_breakout
+    price_zones = find_price_interest_zones(df.copy(), atr_group_mult, min_size, min_sep)
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: find_price_interest_zones() takes from 1 to 3 positional arguments but 4 were given
+2025-07-25 21:26:55 - app.analysis.strategies - ERROR - [Monitor_0] - ❌ 在 AAVE/USDT:USDT 1d (高级量价突破) 中出错: find_price_interest_zones() takes from 1 to 3 positional arguments but 4 were given
+Traceback (most recent call last):
+  File "E:\python\freqtrade\binance_trader\app\analysis\strategies.py", line 224, in check_volume_breakout
+    price_zones = find_price_interest_zones(df.copy(), atr_group_mult, min_size, min_sep)
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: find_price_interest_zones() takes from 1 to 3 positional arguments but 4 were given
+2025-07-25 21:29:43 - app.state - INFO - [MainThread] - ✅ 成功加载冷却状态。有效条目: 4 (从 5 个中加载)
+2025-07-25 21:29:43 - root - INFO - [MainThread] - 🚀 终极监控与信号程序已启动 (V46.1 - Bug修复版)
+2025-07-25 21:29:43 - root - INFO - [MainThread] - 📊 交易所: binance | 市场: swap | 间隔: 15 分钟
+2025-07-25 21:29:43 - root - INFO - [MainThread] - ✅ 通知队列消费者线程已启动。
+2025-07-25 21:29:43 - root - INFO - [MainThread] - 
+📌 首次运行主监控循环...
+2025-07-25 21:29:43 - app.tasks.signal_scanner - INFO - [MainThread] - ============================================================
+2025-07-25 21:29:43 - app.tasks.signal_scanner - INFO - [MainThread] - 🔄 开始执行动态热点监控循环...
+2025-07-25 21:29:43 - app.tasks.signal_scanner - INFO - [MainThread] - 缓存为空，首次获取热门币种列表...
+2025-07-25 21:29:43 - app.tasks.signal_scanner - INFO - [MainThread] -  (扫描任务)正在更新热门币种缓存...
+2025-07-25 21:29:43 - app.services.data_fetcher - INFO - [MainThread] - ...正在从 binance 获取所有交易对的24h行情数据 (目标市场: swap)...
+2025-07-25 21:29:46 - app.services.data_fetcher - INFO - [MainThread] - ...获取成功，共 534 个ticker，正在筛选...
+2025-07-25 21:29:46 - app.services.data_fetcher - INFO - [MainThread] - ✅ 成功筛选出成交额排名前 100 的 SWAP USDT 交易对。
+2025-07-25 21:29:46 - app.tasks.signal_scanner - INFO - [MainThread] - ✅ (扫描任务)热门币种缓存已更新，当前共监控 100 个交易对。
+2025-07-25 21:29:46 - app.tasks.signal_scanner - INFO - [MainThread] - 本轮将使用 100 个交易对进行并发扫描...
+2025-07-25 21:30:46 - app.tasks.signal_scanner - INFO - [MainThread] - ✅ 动态热点监控循环完成
+2025-07-25 21:30:46 - root - INFO - [MainThread] - 
+📌 首次运行市场报告...
+2025-07-25 21:30:46 - app.tasks.daily_reporter - INFO - [MainThread] - --- ☀️ 开始执行每日宏观市场报告 (合约市场) ---
+2025-07-25 21:30:46 - app.tasks.daily_reporter - INFO - [MainThread] -  (报告任务)正在更新热门币种缓存...
+2025-07-25 21:30:46 - app.tasks.daily_reporter - INFO - [MainThread] -  (报告任务)将获取排名前 300 的币种来更新缓存...
+2025-07-25 21:30:46 - app.services.data_fetcher - INFO - [MainThread] - ...正在从 binance 获取所有交易对的24h行情数据 (目标市场: swap)...
+2025-07-25 21:30:48 - app.services.data_fetcher - INFO - [MainThread] - ...获取成功，共 534 个ticker，正在筛选...
+2025-07-25 21:30:48 - app.services.data_fetcher - INFO - [MainThread] - ✅ 成功筛选出成交额排名前 300 的 SWAP USDT 交易对。
+2025-07-25 21:30:48 - app.tasks.daily_reporter - INFO - [MainThread] - ✅ (报告任务)热门币种缓存已更新，当前共监控 300 个交易对。
+2025-07-25 21:30:48 - app.tasks.daily_reporter - INFO - [MainThread] - ...正在基于 300 个热门合约生成报告...
+2025-07-25 21:31:31 - app.tasks.daily_reporter - INFO - [MainThread] - --- ✅ 每日宏观市场报告完成 ---
+2025-07-25 21:31:31 - apscheduler.scheduler - INFO - [MainThread] - Adding job tentatively -- it will be properly scheduled when the scheduler starts
+2025-07-25 21:31:31 - root - INFO - [MainThread] -    - 每日市场报告已添加，将在每天北京时间 08:30 运行。
+2025-07-25 21:31:31 - apscheduler.scheduler - INFO - [MainThread] - Adding job tentatively -- it will be properly scheduled when the scheduler starts
+2025-07-25 21:31:31 - root - INFO - [MainThread] -    - 动态热点监控任务已添加，每 15 分钟运行一次。
+2025-07-25 21:31:31 - root - INFO - [MainThread] - 
+📅 调度器已启动，请保持程序运行。按 Ctrl+C 退出。
+2025-07-25 21:31:31 - apscheduler.scheduler - INFO - [MainThread] - Added job "DailyReport" to job store "default"
+2025-07-25 21:31:31 - apscheduler.scheduler - INFO - [MainThread] - Added job "SignalCheckCycle" to job store "default"
+2025-07-25 21:31:31 - apscheduler.scheduler - INFO - [MainThread] - Scheduler started
+2025-07-25 21:31:31 - app.services.notification_service - INFO - [Thread-3 (notification_consumer)] - ✅ 桌面通知发送成功: 📰 2025-07-24 合约市场热点报告
+2025-07-25 21:31:32 - app.services.notification_service - INFO - [Thread-3 (notification_consumer)] - ✅ (队列)钉钉消息发送成功: 📰 2025-07-24 合约市场热点报告
+2025-07-25 21:32:37 - app.state - INFO - [MainThread] - ✅ 成功加载冷却状态。有效条目: 4 (从 5 个中加载)
+2025-07-25 21:32:37 - root - INFO - [MainThread] - 🚀 终极监控与信号程序已启动 (V46.1 - Bug修复版)
+2025-07-25 21:32:37 - root - INFO - [MainThread] - 📊 交易所: binance | 市场: swap | 间隔: 15 分钟
+2025-07-25 21:32:37 - root - INFO - [MainThread] - ✅ 通知队列消费者线程已启动。
+2025-07-25 21:32:37 - root - INFO - [MainThread] - 
+📌 首次运行主监控循环...
+2025-07-25 21:32:37 - app.tasks.signal_scanner - INFO - [MainThread] - ============================================================
+2025-07-25 21:32:37 - app.tasks.signal_scanner - INFO - [MainThread] - 🔄 开始执行动态热点监控循环...
+2025-07-25 21:32:37 - app.tasks.signal_scanner - INFO - [MainThread] - 缓存为空，首次获取热门币种列表...
+2025-07-25 21:32:37 - app.tasks.signal_scanner - INFO - [MainThread] -  (扫描任务)正在更新热门币种缓存...
+2025-07-25 21:32:37 - app.services.data_fetcher - INFO - [MainThread] - ...正在从 binance 获取所有交易对的24h行情数据 (目标市场: swap)...
+2025-07-25 21:32:40 - app.services.data_fetcher - INFO - [MainThread] - ...获取成功，共 534 个ticker，正在筛选...
+2025-07-25 21:32:40 - app.services.data_fetcher - INFO - [MainThread] - ✅ 成功筛选出成交额排名前 100 的 SWAP USDT 交易对。
+2025-07-25 21:32:40 - app.tasks.signal_scanner - INFO - [MainThread] - ✅ (扫描任务)热门币种缓存已更新，当前共监控 100 个交易对。
+2025-07-25 21:32:40 - app.tasks.signal_scanner - INFO - [MainThread] - 本轮将使用 100 个交易对进行并发扫描...
+2025-07-25 21:33:50 - app.tasks.signal_scanner - INFO - [MainThread] - ✅ 动态热点监控循环完成
+2025-07-25 21:33:50 - root - INFO - [MainThread] - 
+📌 首次运行市场报告...
+2025-07-25 21:33:50 - app.tasks.daily_reporter - INFO - [MainThread] - --- ☀️ 开始执行每日宏观市场报告 (合约市场) ---
+2025-07-25 21:33:50 - app.tasks.daily_reporter - INFO - [MainThread] -  (报告任务)正在更新热门币种缓存...
+2025-07-25 21:33:50 - app.tasks.daily_reporter - INFO - [MainThread] -  (报告任务)将获取排名前 300 的币种来更新缓存...
+2025-07-25 21:33:50 - app.services.data_fetcher - INFO - [MainThread] - ...正在从 binance 获取所有交易对的24h行情数据 (目标市场: swap)...
+2025-07-25 21:33:52 - app.services.data_fetcher - INFO - [MainThread] - ...获取成功，共 534 个ticker，正在筛选...
+2025-07-25 21:33:52 - app.services.data_fetcher - INFO - [MainThread] - ✅ 成功筛选出成交额排名前 300 的 SWAP USDT 交易对。
+2025-07-25 21:33:52 - app.tasks.daily_reporter - INFO - [MainThread] - ✅ (报告任务)热门币种缓存已更新，当前共监控 300 个交易对。
+2025-07-25 21:33:52 - app.tasks.daily_reporter - INFO - [MainThread] - ...正在基于 300 个热门合约生成报告...
+2025-07-25 21:35:02 - app.tasks.daily_reporter - INFO - [MainThread] - --- ✅ 每日宏观市场报告完成 ---
+2025-07-25 21:35:02 - apscheduler.scheduler - INFO - [MainThread] - Adding job tentatively -- it will be properly scheduled when the scheduler starts
+2025-07-25 21:35:02 - root - INFO - [MainThread] -    - 每日市场报告已添加，将在每天北京时间 08:30 运行。
+2025-07-25 21:35:02 - apscheduler.scheduler - INFO - [MainThread] - Adding job tentatively -- it will be properly scheduled when the scheduler starts
+2025-07-25 21:35:02 - root - INFO - [MainThread] -    - 动态热点监控任务已添加，每 15 分钟运行一次。
+2025-07-25 21:35:02 - root - INFO - [MainThread] - 
+📅 调度器已启动，请保持程序运行。按 Ctrl+C 退出。
+2025-07-25 21:35:02 - apscheduler.scheduler - INFO - [MainThread] - Added job "DailyReport" to job store "default"
+2025-07-25 21:35:02 - apscheduler.scheduler - INFO - [MainThread] - Added job "SignalCheckCycle" to job store "default"
+2025-07-25 21:35:02 - apscheduler.scheduler - INFO - [MainThread] - Scheduler started
+2025-07-25 21:35:02 - app.services.notification_service - INFO - [Thread-3 (notification_consumer)] - ✅ 桌面通知发送成功: 📰 2025-07-24 合约市场热点报告
+2025-07-25 21:35:02 - app.services.notification_service - INFO - [Thread-3 (notification_consumer)] - ✅ (队列)钉钉消息发送成功: 📰 2025-07-24 合约市场热点报告
+2025-07-25 21:36:14 - app.state - INFO - [MainThread] - ✅ 成功加载冷却状态。有效条目: 4 (从 5 个中加载)
+2025-07-25 21:36:14 - root - INFO - [MainThread] - 🚀 终极监控与信号程序已启动 (V46.1 - Bug修复版)
+2025-07-25 21:36:14 - root - INFO - [MainThread] - 📊 交易所: binance | 市场: swap | 间隔: 15 分钟
+2025-07-25 21:36:14 - root - INFO - [MainThread] - ✅ 通知队列消费者线程已启动。
+2025-07-25 21:36:14 - root - INFO - [MainThread] - 
+📌 首次运行主监控循环...
+2025-07-25 21:36:14 - app.tasks.signal_scanner - INFO - [MainThread] - ============================================================
+2025-07-25 21:36:14 - app.tasks.signal_scanner - INFO - [MainThread] - 🔄 开始执行动态热点监控循环...
+2025-07-25 21:36:14 - app.tasks.signal_scanner - INFO - [MainThread] - 缓存为空，首次获取热门币种列表...
+2025-07-25 21:36:14 - app.tasks.signal_scanner - INFO - [MainThread] -  (扫描任务)正在更新热门币种缓存...
+2025-07-25 21:36:14 - app.services.data_fetcher - INFO - [MainThread] - ...正在从 binance 获取所有交易对的24h行情数据 (目标市场: swap)...
+2025-07-25 21:37:27 - app.state - INFO - [MainThread] - ✅ 成功加载冷却状态。有效条目: 4 (从 5 个中加载)
+2025-07-25 21:37:27 - root - INFO - [MainThread] - 🚀 终极监控与信号程序已启动 (V46.1 - Bug修复版)
+2025-07-25 21:37:27 - root - INFO - [MainThread] - 📊 交易所: binance | 市场: swap | 间隔: 15 分钟
+2025-07-25 21:37:27 - root - INFO - [MainThread] - ✅ 通知队列消费者线程已启动。
+2025-07-25 21:37:27 - root - INFO - [MainThread] - 
+📌 首次运行主监控循环...
+2025-07-25 21:37:27 - app.tasks.signal_scanner - INFO - [MainThread] - ============================================================
+2025-07-25 21:37:27 - app.tasks.signal_scanner - INFO - [MainThread] - 🔄 开始执行动态热点监控循环...
+2025-07-25 21:37:27 - app.tasks.signal_scanner - INFO - [MainThread] - 缓存为空，首次获取热门币种列表...
+2025-07-25 21:37:27 - app.tasks.signal_scanner - INFO - [MainThread] -  (扫描任务)正在更新热门币种缓存...
+2025-07-25 21:37:27 - app.services.data_fetcher - INFO - [MainThread] - ...正在从 binance 获取所有交易对的24h行情数据 (目标市场: swap)...
+2025-07-25 21:37:32 - app.services.data_fetcher - INFO - [MainThread] - ...获取成功，共 534 个ticker，正在筛选...
+2025-07-25 21:37:32 - app.services.data_fetcher - INFO - [MainThread] - ✅ 成功筛选出成交额排名前 100 的 SWAP USDT 交易对。
+2025-07-25 21:37:32 - app.tasks.signal_scanner - INFO - [MainThread] - ✅ (扫描任务)热门币种缓存已更新，当前共监控 100 个交易对。
+2025-07-25 21:37:32 - app.tasks.signal_scanner - INFO - [MainThread] - 本轮将使用 100 个交易对进行并发扫描...

@@ -1,0 +1,6 @@
+app/__pycache__/
+app/analysis/__pycache__/
+app/services/__pycache__/
+app/tasks/__pycache__/
+monitor/__pycache__/
+.idea/

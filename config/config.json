@@ -1,0 +1,137 @@
+{
+  "app_settings": {
+    "exchange": "binance",
+    "default_market_type": "swap",
+    "check_interval_minutes": 15,
+    "log_level": "INFO",
+    "max_workers": 2
+  },
+  "market_settings": {
+    "timeframes": [
+      "15m",
+      "1h",
+      "4h",
+      "1d"
+    ],
+    "static_symbols": [
+      "BTC/USDT:USDT",
+      "ETH/USDT:USDT"
+    ],
+    "dynamic_scan": {
+      "enabled": true,
+      "top_n_for_signals": 100,
+      "exclude_symbols": [
+        "USDT",
+        "USD1",
+        "USDS",
+        "USDC",
+        "DAI",
+        "TUSD",
+        "BUSD",
+        "FDUSD",
+        "PAXG",
+        "USDP",
+        "GUSD",
+        "USDD",
+        "EUROC"
+      ]
+    }
+  },
+  "strategy_params": {
+    "trend_ema": {
+      "long_period": 120
+    },
+    "dynamic_volume_multipliers": {
+      "enabled": true,
+      "method": "linear",
+      "min_multiplier": 1.5,
+      "max_multiplier": 10.0,
+      "apply_to_rank_n": 100
+    },
+    "dynamic_atr_multipliers": {
+      "enabled": false,
+      "method": "linear",
+      "min_multiplier": 1.5,
+      "max_multiplier": 5.0,
+      "apply_to_rank_n": 100
+    },
+    "trend_ema_short": {
+      "fast": 12,
+      "medium": 26,
+      "long": 60
+    },
+    "trend_ema_long": {
+      "fast": 26,
+      "medium": 50,
+      "long": 120
+    },
+    "ema_cross": {
+      "enabled": true,
+      "period": 120,
+      "volume_confirm": true,
+      "volume_multiplier": 2,
+      "atr_period": 14,
+      "atr_multiplier": 1
+    },
+    "kdj_cross": {
+      "enabled": true,
+      "fast_k": 9,
+      "slow_k": 3,
+      "slow_d": 3,
+      "volume_confirm": true,
+      "volume_multiplier": 2
+    },
+    "volatility_breakout": {
+      "enabled": true,
+      "atr_period": 14,
+      "atr_multiplier": 2.5,
+      "volume_confirm": true,
+      "volume_multiplier": 2.0
+    },
+    "volume_breakout": {
+      "enabled": true,
+      "level_detection": {
+        "method": "advanced",
+        "clustering": {
+          "enabled": true,
+          "atr_grouping_multiplier": 1,
+          "min_cluster_size": 2,
+          "min_separation_atr_mult": 1.0
+        },
+        "pivots": {
+          "enabled": true
+        },
+        "confluence_pct": 0.2
+      },
+      "breakout_period": 120,
+      "volume_ma_period": 20,
+      "atr_period": 14,
+      "atr_multiplier_breakout": 0.1
+    },
+    "rsi_divergence": {
+      "enabled": false,
+      "rsi_period": 14,
+      "lookback_period": 60
+    }
+  },
+  "daily_report": {
+    "enabled": true,
+    "scan_time_beijing": "08:30",
+    "top_n_by_volume": 300,
+    "top_n_gainers": 10,
+    "min_consecutive_days": 2,
+    "volume_ma_period": 20,
+    "top_n_volume_ratio": 10
+  },
+  "notification_settings": {
+    "dingtalk": {
+      "enabled": true,
+      "webhook_url": "https://oapi.dingtalk.com/robot/send?access_token=edddf82c3fbbdb588f2ac0f34063dc62b5d491bbf4229448198ddfa23b5841ee",
+      "secret": "SECcb85b5e3bf387be5e475f157349da3e93cc12d95b62cc7b7a4bdefbe0037a1cd"
+    },
+    "desktop": {
+      "enabled": true,
+      "timeout_seconds": 30
+    }
+  }
+}
