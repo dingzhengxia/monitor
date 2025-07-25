@@ -5,3 +5,4 @@ app/tasks/__pycache__/
 monitor/__pycache__/
 .idea/
 monitor.log
+cooldown_status.json
