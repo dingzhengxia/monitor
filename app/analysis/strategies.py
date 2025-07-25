@@ -1,7 +1,6 @@
 # --- START OF FILE app/analysis/strategies.py (ULTIMATE FORMATTING FIX V53.1 - FULL CODE) ---
-import logging
 from datetime import datetime, timezone
-
+from loguru import logger
 import pandas as pd
 import pandas_ta as pta
 
@@ -13,8 +12,6 @@ from app.analysis.indicators import (
     get_dynamic_volume_multiplier, get_dynamic_atr_multiplier, is_realtime_volume_over
 )
 from app.utils import calculate_cooldown_time
-
-logger = logging.getLogger(__name__)
 
 
 def _prepare_and_send_notification(config, symbol, timeframe, df, signal_info):

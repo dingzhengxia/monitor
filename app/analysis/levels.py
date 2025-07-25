@@ -1,11 +1,5 @@
 # --- START OF FILE app/analysis/levels.py (ULTIMATE FIX V50.1 - FULL CODE) ---
-import logging
 import pandas as pd
-import pandas_ta as pta
-import numpy as np
-import math
-
-logger = logging.getLogger(__name__)
 
 
 def calculate_pivot_points(daily_ohlc):

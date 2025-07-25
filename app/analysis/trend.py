@@ -1,11 +1,8 @@
 # --- START OF FILE app/analysis/trend.py (CORRECTED V35.2) ---
-import logging
 import pandas_ta as pta
-
+from loguru import logger
 # 本地应用导入
 from app.utils import timeframe_to_minutes  # <-- 从 utils 导入
-
-logger = logging.getLogger(__name__)
 
 
 def get_current_trend(df, timeframe, trend_params_config):

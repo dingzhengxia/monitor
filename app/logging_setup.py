@@ -1,42 +1,44 @@
-# --- START OF FILE app/logging_setup.py (UPDATED to Silence ccxt) ---
-import logging
-from logging.handlers import TimedRotatingFileHandler
+# app/logging_setup.py
+from loguru import logger  # 全局对象
+import os
 
 
 def setup_logging(level="INFO"):
-    log_level = getattr(logging, level.upper(), logging.INFO)
+    # 1. 创建日志目录
+    log_dir = "log"
+    os.makedirs(log_dir, exist_ok=True)
 
-    # 1. 获取根 logger 并设置全局级别
-    logger = logging.getLogger()
-    logger.setLevel(log_level)
+    # 2. 清除默认配置
+    logger.remove()
 
-    # 清理旧的 handlers，防止重复输出
-    if logger.hasHandlers():
-        logger.handlers.clear()
-
-    # 2. 创建并设置格式化器
-    console_format = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
-    file_format = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - [%(threadName)s] - %(message)s',
-                                    datefmt='%Y-%m-%d %H:%M:%S')
-
-    # 3. 创建 handlers
-    console_handler = logging.StreamHandler()
-    console_handler.setFormatter(console_format)
-
-    file_handler = TimedRotatingFileHandler(
-        filename='log/monitor.log', when='midnight', interval=1, backupCount=7, encoding='utf-8'
+    # 3. 控制台输出
+    logger.add(
+        sink=lambda msg: print(msg, end=""),
+        format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level:8}</level> | <cyan>{module}.{function}:{line}</cyan> - {message}",
+        level=level,
+        colorize=True
     )
-    file_handler.setFormatter(file_format)
 
-    # 4. 将 handlers 添加到根 logger
-    logger.addHandler(console_handler)
-    logger.addHandler(file_handler)
+    # 4. 文件输出
+    log_file = os.path.join(log_dir, "monitor.log")
+    logger.add(
+        sink=log_file,
+        rotation="00:00",
+        retention="7 days",
+        compression="zip",
+        format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level:8}</level> | <cyan>{module}.{function}:{line}</cyan> - {message}",
+        level=level,
+        enqueue=True
+    )
 
-    # 5. 【核心修改】: 精准屏蔽特定库的 DEBUG 日志
-    # 无论全局级别多低，都让这些库保持安静
-    logging.getLogger('ccxt.base.exchange').setLevel(logging.INFO)
-    logging.getLogger('urllib3').setLevel(logging.INFO)
-    logging.getLogger('apscheduler.executors.default').setLevel(logging.WARNING)
+    # 5. 动态过滤（不重新赋值logger）
+    def filter_low_level(record):
+        if record["name"] in ["ccxt.base.exchange", "urllib3"]:
+            return record["level"].no >= logger.level("INFO").no
+        if record["name"] == "apscheduler.executors.default":
+            return record["level"].no >= logger.level("WARNING").no
+        return True
 
-    return logger
-# --- END OF FILE app/logging_setup.py (UPDATED to Silence ccxt) ---
+    logger.patch(filter_low_level)  # ✅ 直接应用过滤
+
+    return logger  # ✅ 返回全局对象

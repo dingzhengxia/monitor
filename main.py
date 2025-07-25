@@ -1,19 +1,24 @@
 # --- START OF FILE main.py (UPDATED V46.1 - FULL CODE) ---
-import signal, sys, json, logging, threading
+import signal
+import sys
+import threading
+
 import ccxt
 from apscheduler.schedulers.blocking import BlockingScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
+from loguru import logger
+
 from app.config import load_config
 from app.logging_setup import setup_logging
+from app.services.notification_service import notification_consumer
 from app.state import load_alert_states
 from app.tasks.daily_reporter import run_daily_report
 from app.tasks.signal_scanner import run_signal_check_cycle
-from app.services.notification_service import notification_consumer
 
 
 def handle_exit(signum, frame):
-    logging.getLogger().info("\n👋 收到退出信号，程序正在优雅关闭...")
+    logger.info("\n👋 收到退出信号，程序正在优雅关闭...")
     sys.exit(0)
 
 
@@ -23,7 +28,8 @@ def main():
     try:
         config = load_config()
     except (FileNotFoundError, ValueError) as e:
-        print(f"错误: {e}"); return
+        print(f"错误: {e}");
+        return
     logger = setup_logging(config.get('app_settings', {}).get("log_level", "INFO"))
     load_alert_states()
     app_conf = config.get('app_settings', {})
@@ -31,9 +37,11 @@ def main():
         exchange = getattr(ccxt, app_conf.get('exchange'))(
             {'enableRateLimit': True, 'options': {'defaultType': app_conf.get('default_market_type')}})
     except (AttributeError, KeyError) as e:
-        logger.error(f"❌ 初始化交易所失败: 配置错误或交易所不支持 - {e}"); return
+        logger.error(f"❌ 初始化交易所失败: 配置错误或交易所不支持 - {e}");
+        return
     except Exception as e:
-        logger.error(f"❌ 初始化交易所时发生未知错误: {e}", exc_info=True); return
+        logger.error(f"❌ 初始化交易所时发生未知错误: {e}", exc_info=True);
+        return
 
     logger.info("🚀 终极监控与信号程序已启动 (V46.1 - Bug修复版)")
     logger.info(

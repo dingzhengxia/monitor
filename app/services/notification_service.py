@@ -3,20 +3,16 @@ import base64
 import hashlib
 import hmac
 import json
-import logging
+import queue
 import time
 import urllib.parse
-import os
-import threading
-import queue
 
 import requests
 from plyer import notification
+from loguru import logger
 
 # 【核心修正】: 只从 state 导入队列
 from app.state import notification_queue
-
-logger = logging.getLogger(__name__)
 
 
 def _send_desktop_notification(title, message, timeout=10):

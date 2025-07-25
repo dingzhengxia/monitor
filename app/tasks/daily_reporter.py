@@ -1,15 +1,11 @@
 # --- START OF FILE app/tasks/daily_reporter.py (RESTORED to TEXT-ONLY VERSION) ---
-import logging
 import time
 from datetime import datetime, timedelta
 
-import pandas as pd
-
-from app.state import cached_top_symbols
-from app.services.notification_service import send_alert
 from app.services.data_fetcher import get_top_n_symbols_by_volume, fetch_ohlcv_data
-
-logger = logging.getLogger(__name__)
+from app.services.notification_service import send_alert
+from app.state import cached_top_symbols
+from loguru import logger
 
 
 def _update_cache_for_report(exchange, config):

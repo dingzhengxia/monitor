@@ -1,9 +1,8 @@
 # --- START OF FILE app/services/data_fetcher.py ---
-import logging
 import time
 import pandas as pd
+from loguru import logger
 
-logger = logging.getLogger(__name__)
 
 def get_top_n_symbols_by_volume(exchange, top_n=100, exclude_list=[], market_type='swap', retries=5):
     logger.info(f"...正在从 {exchange.id} 获取所有交易对的24h行情数据 (目标市场: {market_type})...")
@@ -14,7 +13,8 @@ def get_top_n_symbols_by_volume(exchange, top_n=100, exclude_list=[], market_typ
             usdt_tickers = []
             for symbol_str, ticker in tickers.items():
                 if not ticker or ticker.get('quoteVolume', 0) == 0: continue
-                symbol = ticker.get('symbol', symbol_str); is_swap = ticker.get('swap', False) or ':' in symbol
+                symbol = ticker.get('symbol', symbol_str);
+                is_swap = ticker.get('swap', False) or ':' in symbol
                 if market_type == 'swap' and not is_swap: continue
                 is_spot = ticker.get('spot', False) or '/' in symbol and not is_swap
                 if market_type == 'spot' and not is_spot: continue
@@ -28,14 +28,17 @@ def get_top_n_symbols_by_volume(exchange, top_n=100, exclude_list=[], market_typ
             return [t['symbol'] for t in sorted_tickers]
         except Exception as e:
             logger.warning(f"获取行情数据失败 (尝试 {i + 1}/{retries}): {e}")
-            if i < retries - 1: time.sleep(exchange.rateLimit / 1000)
-            else: logger.error(f"❌ 已达到最大重试次数。"); return []
+            if i < retries - 1:
+                time.sleep(exchange.rateLimit / 1000)
+            else:
+                logger.error(f"❌ 已达到最大重试次数。"); return []
     return []
+
 
 def fetch_ohlcv_data(exchange, symbol, timeframe, limit):
     try:
         ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
-        if not ohlcv or len(ohlcv) < 50: # 基本的数据有效性检查
+        if not ohlcv or len(ohlcv) < 50:  # 基本的数据有效性检查
             return None
         df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
         return df

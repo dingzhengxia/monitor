@@ -1,12 +1,11 @@
 # --- START OF FILE app/utils.py (RESTORED to TEXT-ONLY VERSION) ---
 import json
-import logging
 from datetime import datetime, timedelta, timezone
-import math
+
+from loguru import logger
 
 from app.state import alerted_states
 
-logger = logging.getLogger(__name__)
 ALERT_STATUS_FILE = 'cooldown_status.json'
 
 

@@ -1,8 +1,7 @@
 # --- START OF FILE app/tasks/signal_scanner.py (FIXED) ---
-import logging
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-
+from loguru import logger
 # 本地应用导入
 from app.state import cached_top_symbols
 from app.services.data_fetcher import fetch_ohlcv_data, get_top_n_symbols_by_volume  # 修正导入
@@ -10,8 +9,6 @@ from app.analysis.strategies import (
     check_ema_signals, check_kdj_cross, check_volatility_breakout,
     check_volume_breakout, check_rsi_divergence
 )
-
-logger = logging.getLogger(__name__)
 
 
 # 为了保持职责清晰，扫描器自己负责在需要时更新缓存
