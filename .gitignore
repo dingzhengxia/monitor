@@ -6,3 +6,4 @@ monitor/__pycache__/
 .idea/
 monitor.log
 cooldown_status.json
+.log

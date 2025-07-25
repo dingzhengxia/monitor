@@ -130,7 +130,7 @@
       "secret": "SECcb85b5e3bf387be5e475f157349da3e93cc12d95b62cc7b7a4bdefbe0037a1cd"
     },
     "desktop": {
-      "enabled": true,
+      "enabled": false,
       "timeout_seconds": 30
     }
   }

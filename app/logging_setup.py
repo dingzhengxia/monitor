@@ -24,7 +24,7 @@ def setup_logging(level="INFO"):
     console_handler.setFormatter(console_format)
 
     file_handler = TimedRotatingFileHandler(
-        filename='monitor.log', when='midnight', interval=1, backupCount=7, encoding='utf-8'
+        filename='log/monitor.log', when='midnight', interval=1, backupCount=7, encoding='utf-8'
     )
     file_handler.setFormatter(file_format)
 
