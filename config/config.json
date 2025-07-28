@@ -2,7 +2,7 @@
   "app_settings": {
     "exchange": "binance",
     "default_market_type": "swap",
-    "check_interval_minutes": 15,
+    "check_interval_minutes": 5,
     "log_level": "INFO",
     "max_workers": 2
   },
