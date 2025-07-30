@@ -137,10 +137,10 @@
       "dynamic_count": {
         "enabled": true,
         "method": "linear_stepped",
-        "min_count": 6,
+        "min_count": 5,
         "max_count": 12,
         "apply_to_rank_n": 100,
-        "rank_step_size": 10,
+        "rank_step_size": 3,
         "default_count": 9
       },
       "min_consecutive_candles": 4,
