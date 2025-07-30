@@ -9,7 +9,8 @@ from app.services.notification_service import send_alert
 from app.analysis.trend import get_current_trend, timeframe_to_minutes
 from app.analysis.levels import find_price_interest_zones, calculate_pivot_points
 from app.analysis.indicators import (
-    get_dynamic_volume_multiplier, get_dynamic_atr_multiplier, is_realtime_volume_over
+    get_dynamic_volume_multiplier, get_dynamic_atr_multiplier, is_realtime_volume_over,
+    get_dynamic_consecutive_candles
 )
 from app.utils import calculate_cooldown_time
 
@@ -319,4 +320,68 @@ def check_rsi_divergence(exchange, symbol, timeframe, config, df):
                 save_alert_states()
     except Exception as e:
         logger.error(f"❌ 在 {symbol} {timeframe} (RSI背离) 中出错: {e}", exc_info=True)
-# --- END OF FILE app/analysis/strategies.py (ULTIMATE FORMATTING FIX V53.1 - FULL CODE) ---
+
+
+def check_consecutive_candles(exchange, symbol, timeframe, config, df):
+    try:
+        params = config['strategy_params']
+        consecutive_params = params.get('consecutive_candles', {})
+
+        # 【核心修改】: 使用动态函数获取K线数量 n
+        fallback_n = consecutive_params.get('min_consecutive_candles', 4)
+        n = get_dynamic_consecutive_candles(symbol, config, fallback_n)
+
+        if len(df) < n + 1:
+            return
+
+        # 注意：这里我们检查的是从倒数第n+1根到倒数第2根 (即最近n个已完成的K线)
+        # 这样信号更稳定，避免盘中K线颜色变化导致信号闪烁
+        recent_candles = df.iloc[-n - 1:-1]
+
+        if len(recent_candles) < n:
+            return  # 确保切片后仍有足够的K线
+
+        is_all_up = (recent_candles['close'] > recent_candles['open']).all()
+        is_all_down = (recent_candles['close'] < recent_candles['open']).all()
+
+        if not (is_all_up or is_all_down):
+            return
+
+        direction = "上涨" if is_all_up else "下跌"
+        emoji = "📈" if is_all_up else "📉"
+        trend_status, trend_emoji = get_current_trend(df.copy(), timeframe, params)
+        trend_message = f"**当前趋势**: {trend_emoji} {trend_status}\n\n"
+
+        # 使用动态获取的 n 值来生成唯一的 alert_key
+        alert_key = f"{symbol}_{timeframe}_CONSECUTIVE_{'UP' if is_all_up else 'DOWN'}_{n}"
+
+        # 信号逻辑现在只在第一次满足N根条件时触发，之后由冷却期控制
+        # 直接准备并发送通知
+        signal_info = {
+            'log_name': 'Consecutive Candles',
+            'alert_key': alert_key,  # 使用上面生成的 key
+            'volume_must_confirm': consecutive_params.get('volume_confirm', False),
+            'fallback_multiplier': consecutive_params.get('volume_multiplier', 1.5),
+            'title_template': f"{emoji} 连续{direction}信号: {symbol} ({timeframe})".replace("  ", " "),
+            'message_template': ("{trend_message}**信号**: 价格已连续 **{n} 个周期 {direction}**。\n\n"
+                                 "**动态参数详情**:\n"
+                                 "> **币种排名**: 触发时需要 `{n}` 根连续K线\n\n"
+                                 "**详细信息**:\n"
+                                 "> **起始价**: {start_price:.4f}\n"
+                                 "> **当前价**: {end_price:.4f}\n\n"
+                                 "{vol_text}"),
+            'template_data': {"trend_message": trend_message,
+                              "n": n,
+                              "direction": direction,
+                              "start_price": recent_candles.iloc[0]['open'],
+                              "end_price": recent_candles.iloc[-1]['close']},
+            # 冷却时间至少为N个周期，防止在第 N+1 根时再次报警
+            'cooldown_mult': n
+        }
+
+        # 注意：这里我们直接调用 _prepare_and_send_notification
+        # 它内部会处理冷却期检查
+        _prepare_and_send_notification(config, symbol, timeframe, df, signal_info)
+
+    except Exception as e:
+        logger.error(f"❌ 在 {symbol} {timeframe} (动态连续K线信号) 中出错: {e}", exc_info=True)

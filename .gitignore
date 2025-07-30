@@ -7,3 +7,4 @@ monitor/__pycache__/
 monitor.log
 cooldown_status.json
 .log
+log/

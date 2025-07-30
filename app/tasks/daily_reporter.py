@@ -1,4 +1,4 @@
-# --- START OF FILE app/tasks/daily_reporter.py (RESTORED to TEXT-ONLY VERSION) ---
+# --- START OF FILE app/tasks/daily_reporter.py (FINAL SIMPLIFIED LOGIC) ---
 import time
 from datetime import datetime, timedelta
 
@@ -8,32 +8,57 @@ from app.state import cached_top_symbols
 from loguru import logger
 
 
+def _get_symbol_in_primary_market(base_symbol, config):
+    """辅助函数，将基础货币转换为带计价货币的完整交易对名称"""
+    primary_quote = config.get('market_settings', {}).get('dynamic_scan', {}).get('primary_quote_currency',
+                                                                                  'USDT').upper()
+    market_type = config.get('app_settings', {}).get('default_market_type', 'swap')
+
+    if market_type == 'swap':
+        if primary_quote == "USDT":
+            return f"{base_symbol.upper()}/USDT:USDT"
+        return f"{base_symbol.upper()}/{primary_quote}:{primary_quote}"
+    else:  # spot
+        return f"{base_symbol.upper()}/{primary_quote}"
+
+
 def _update_cache_for_report(exchange, config):
     logger.info(" (报告任务)正在更新热门币种缓存...")
-    dyn_scan_conf = config['market_settings']['dynamic_scan']
+
+    # 步骤 1: 获取动态扫描列表
+    dyn_scan_conf = config.get('market_settings', {}).get('dynamic_scan', {})
     report_conf = config.get('daily_report', {})
     top_n_for_signals = dyn_scan_conf.get('top_n_for_signals', 100)
     top_n_for_report = report_conf.get('top_n_by_volume', 100)
     fetch_n = max(top_n_for_signals, top_n_for_report)
-    logger.info(f" (报告任务)将获取排名前 {fetch_n} 的币种来更新缓存...")
-    new_symbols = get_top_n_symbols_by_volume(
+
+    dynamic_symbols_list = get_top_n_symbols_by_volume(
         exchange,
-        top_n=fetch_n,
+        top_n=fetch_n,  # 报告任务需要更多币种
         exclude_list=[s.upper() for s in dyn_scan_conf.get('exclude_symbols', [])],
-        market_type=config['app_settings']['default_market_type']
+        market_type=config.get('app_settings', {}).get('default_market_type', 'swap'),
+        config=config
     )
-    if new_symbols:
-        fixed_symbols = set(config['market_settings'].get('static_symbols', []))
-        cached_top_symbols.clear()
-        cached_top_symbols.extend(sorted(list(fixed_symbols.union(set(new_symbols)))))
-        logger.info(f"✅ (报告任务)热门币种缓存已更新，当前共监控 {len(cached_top_symbols)} 个交易对。")
-    else:
-        logger.warning("(报告任务)更新缓存失败。")
+
+    # 步骤 2: 获取白名单 (static_symbols) 并转换为完整交易对名称
+    static_bases = config.get('market_settings', {}).get('static_symbols', [])
+    static_symbols_list = [_get_symbol_in_primary_market(base, config) for base in static_bases]
+
+    # 步骤 3: 合并并更新全局缓存
+    final_list = list(dynamic_symbols_list)
+    for s in static_symbols_list:
+        if s not in final_list:
+            final_list.append(s)
+
+    cached_top_symbols.clear()
+    cached_top_symbols.extend(final_list)
+    logger.info(f"✅ (报告任务)热门币种缓存已更新，当前共监控 {len(cached_top_symbols)} 个交易对。")
 
 
 def run_daily_report(exchange, config):
     logger.info("--- ☀️ 开始执行每日宏观市场报告 (合约市场) ---")
     try:
+        # 报告任务总是假设动态扫描是其一部分，因为它需要热门币种数据
         _update_cache_for_report(exchange, config)
         if not cached_top_symbols:
             logger.warning("报告任务中止：热门币种缓存为空。")
@@ -111,4 +136,3 @@ def run_daily_report(exchange, config):
         logger.info("--- ✅ 每日宏观市场报告完成 ---")
     except Exception as e:
         logger.error(f"❌ 执行每日报告任务时发生严重错误: {e}", exc_info=True)
-# --- END OF FILE app/tasks/daily_reporter.py (RESTORED to TEXT-ONLY VERSION) ---
