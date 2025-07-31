@@ -120,7 +120,7 @@
       "volume_ma_period": 20,
       "atr_period": 14,
       "atr_multiplier_breakout": 0.1,
-      "exclude_timeframes": ["15m"],
+      "exclude_timeframes": ["15m"]
     },
     "rsi_divergence": {
       "enabled": false,
