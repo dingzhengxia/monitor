@@ -3,8 +3,7 @@ from loguru import logger
 import pandas as pd
 import pandas_ta as pta
 
-# 【核心修改】导入新的状态变量
-from app.state import alerted_states, save_alert_states, consecutive_trends_status
+from app.state import alerted_states, save_alert_states
 from app.services.notification_service import send_alert
 from app.analysis.trend import get_current_trend, timeframe_to_minutes
 from app.analysis.levels import find_price_interest_zones, calculate_pivot_points
@@ -38,12 +37,23 @@ def _prepare_and_send_notification(config, symbol, timeframe, df, signal_info):
     title = signal_info['title_template'].format(vol_label=volume_label).replace("  ", " ")
 
     message_data = signal_info.get('template_data', {})
+
+    # 添加通用信息
+    trend_status, trend_emoji = get_current_trend(df.copy(), timeframe, params)
+    message_data['trend_message'] = f"**当前趋势**: {trend_emoji} {trend_status}\n\n"
     message_data['vol_text'] = vol_text if is_vol_over else ""
+
     message = signal_info['message_template'].format(**message_data)
 
     send_alert(config, title, message, symbol)
-    cooldown_minutes = tf_minutes * signal_info.get('cooldown_mult', 1)
-    alerted_states[alert_key] = calculate_cooldown_time(cooldown_minutes)
+
+    # 冷却逻辑分支
+    if signal_info.get('cooldown_logic') == 'align_to_period_end':
+        alerted_states[alert_key] = calculate_cooldown_time(tf_minutes, align_to_period_end=True)
+    else:
+        cooldown_minutes = tf_minutes * signal_info.get('cooldown_mult', 1)
+        alerted_states[alert_key] = calculate_cooldown_time(cooldown_minutes)
+
     save_alert_states()
 
 
@@ -321,88 +331,101 @@ def check_rsi_divergence(exchange, symbol, timeframe, config, df):
         logger.error(f"❌ 在 {symbol} {timeframe} (RSI背离) 中出错: {e}", exc_info=True)
 
 
-# 【核心修改】用这个全新版本替换旧的 check_consecutive_candles 函数
 def check_consecutive_candles(exchange, symbol, timeframe, config, df):
     try:
         params = config['strategy_params']
         consecutive_params = params.get('consecutive_candles', {})
-
-        # 动态获取触发警报所需的最小连续K线数
         fallback_n = consecutive_params.get('min_consecutive_candles', 4)
         min_n_to_alert = get_dynamic_consecutive_candles(symbol, config, fallback_n)
 
-        if len(df) < 2:
+        # 至少需要 n+1 根K线来判断反转
+        if len(df) < min_n_to_alert + 1:
             return
 
-        # 获取当前状态
-        status_key = f"{symbol}_{timeframe}"
-        current_status = consecutive_trends_status.get(status_key, {'direction': 'none', 'count': 0})
+        # --- 辅助函数：从指定位置向前回溯计数 ---
+        def count_backwards(start_index, direction):
+            count = 0
+            for i in range(start_index, -1, -1):
+                candle = df.iloc[i]
+                is_up = candle['close'] > candle['open']
+                is_down = candle['close'] < candle['open']
 
-        # 分析最后一根已完成的K线
+                current_direction = 'up' if is_up else ('down' if is_down else 'none')
+                if current_direction == direction:
+                    count += 1
+                else:
+                    break
+            return count
+
+        # --- 分析最新的两根已完成K线 ---
         last_candle = df.iloc[-2]
-        is_up = last_candle['close'] > last_candle['open']
-        is_down = last_candle['close'] < last_candle['open']
+        prev_candle = df.iloc[-3]
 
-        new_status = current_status.copy()
+        is_last_up = last_candle['close'] > last_candle['open']
+        is_last_down = last_candle['close'] < last_candle['open']
+        is_prev_up = prev_candle['close'] > prev_candle['open']
+        is_prev_down = prev_candle['close'] < prev_candle['open']
 
-        # 状态机逻辑
-        if is_up:
-            if current_status['direction'] == 'up':
-                # 状态：连续上涨持续
-                new_status['count'] += 1
-            else:
-                # 状态：从其他状态切换到上涨
-                if current_status['direction'] == 'down' and current_status['count'] >= min_n_to_alert:
-                    # **反转信号**: 从一个已确认的下跌趋势反转
-                    title = f"🔄 趋势反转: {symbol} ({timeframe})"
-                    message = (f"**信号**: **下跌趋势终结**!\n\n"
-                               f"> 连续下跌 **{current_status['count']}** 根K线后，出现首根上涨K线。\n"
-                               f"> **当前价**: {last_candle['close']:.4f}")
-                    send_alert(config, title, message, symbol)
+        # --- 1. 检查反转信号 ---
+        # 从下跌反转为上涨
+        if is_last_up and is_prev_down:
+            prev_down_trend_count = count_backwards(len(df) - 3, 'down')
+            if prev_down_trend_count >= min_n_to_alert:
+                alert_key = f"{symbol}_{timeframe}_REVERSAL_UP_{last_candle['timestamp']}"
+                signal_info = {
+                    'alert_key': alert_key,
+                    'title_template': f"🔄 趋势反转: {symbol} ({timeframe})",
+                    'message_template': ("{trend_message}**信号**: **下跌趋势终结**!\n\n"
+                                         f"> 连续下跌 **{prev_down_trend_count}** 根K线后，出现首根上涨K线。\n"
+                                         f"> **当前价**: {last_candle['close']:.4f}"),
+                    'template_data': {},
+                    'cooldown_logic': 'align_to_period_end'
+                }
+                _prepare_and_send_notification(config, symbol, timeframe, df, signal_info)
 
-                new_status = {'direction': 'up', 'count': 1}
+        # 从上涨反转为下跌
+        elif is_last_down and is_prev_up:
+            prev_up_trend_count = count_backwards(len(df) - 3, 'up')
+            if prev_up_trend_count >= min_n_to_alert:
+                alert_key = f"{symbol}_{timeframe}_REVERSAL_DOWN_{last_candle['timestamp']}"
+                signal_info = {
+                    'alert_key': alert_key,
+                    'title_template': f"🔄 趋势反转: {symbol} ({timeframe})",
+                    'message_template': ("{trend_message}**信号**: **上涨趋势终结**!\n\n"
+                                         f"> 连续上涨 **{prev_up_trend_count}** 根K线后，出现首根下跌K线。\n"
+                                         f"> **当前价**: {last_candle['close']:.4f}"),
+                    'template_data': {},
+                    'cooldown_logic': 'align_to_period_end'
+                }
+                _prepare_and_send_notification(config, symbol, timeframe, df, signal_info)
 
-        elif is_down:
-            if current_status['direction'] == 'down':
-                # 状态：连续下跌持续
-                new_status['count'] += 1
-            else:
-                # 状态：从其他状态切换到下跌
-                if current_status['direction'] == 'up' and current_status['count'] >= min_n_to_alert:
-                    # **反转信号**: 从一个已确认的上涨趋势反转
-                    title = f"🔄 趋势反转: {symbol} ({timeframe})"
-                    message = (f"**信号**: **上涨趋势终结**!\n\n"
-                               f"> 连续上涨 **{current_status['count']}** 根K线后，出现首根下跌K线。\n"
-                               f"> **当前价**: {last_candle['close']:.4f}")
-                    send_alert(config, title, message, symbol)
+        # --- 2. 检查持续信号 ---
+        current_trend_count = 0
+        current_direction = None
 
-                new_status = {'direction': 'down', 'count': 1}
-        else:
-            # 状态：出现十字星或平盘，趋势中断
-            if current_status['direction'] == 'down' and current_status['count'] >= min_n_to_alert:
-                title = f"⏸️ 趋势暂停: {symbol} ({timeframe})"
-                message = (f"**信号**: **下跌趋势中断**!\n\n"
-                           f"> 连续下跌 **{current_status['count']}** 根K线后，出现十字星或平盘K线。")
-                send_alert(config, title, message, symbol)
-            elif current_status['direction'] == 'up' and current_status['count'] >= min_n_to_alert:
-                title = f"⏸️ 趋势暂停: {symbol} ({timeframe})"
-                message = (f"**信号**: **上涨趋势中断**!\n\n"
-                           f"> 连续上涨 **{current_status['count']}** 根K线后，出现十字星或平盘K线。")
-                send_alert(config, title, message, symbol)
+        if is_last_up:
+            current_direction = 'up'
+            current_trend_count = count_backwards(len(df) - 2, 'up')
+        elif is_last_down:
+            current_direction = 'down'
+            current_trend_count = count_backwards(len(df) - 2, 'down')
 
-            new_status = {'direction': 'none', 'count': 0}
-
-        # 更新状态
-        consecutive_trends_status[status_key] = new_status
-
-        # 根据新状态发送持续警报
-        if new_status['count'] >= min_n_to_alert:
-            direction_text = "上涨" if new_status['direction'] == 'up' else "下跌"
-            emoji = "📈" if new_status['direction'] == 'up' else "📉"
-            title = f"{emoji} 趋势持续: {symbol} ({timeframe})"
-            message = (f"**信号**: 价格已连续 **{new_status['count']}** 个周期{direction_text}。\n\n"
-                       f"> **当前价**: {last_candle['close']:.4f}")
-            send_alert(config, title, message, symbol)
+        if current_trend_count >= min_n_to_alert:
+            alert_key = f"{symbol}_{timeframe}_CONTINUOUS_{current_direction.upper()}_{last_candle['timestamp']}"
+            direction_text = "上涨" if current_direction == 'up' else "下跌"
+            emoji = "📈" if current_direction == 'up' else "📉"
+            signal_info = {
+                'alert_key': alert_key,
+                'title_template': f"{emoji} 趋势持续: {symbol} ({timeframe})",
+                'message_template': ("{trend_message}**信号**: 价格已连续 **{current_trend_count}** 个周期{direction_text}。\n\n"
+                                     f"> **当前价**: {last_candle['close']:.4f}\n\n"
+                                     "{vol_text}"),
+                'template_data': {'current_trend_count': current_trend_count, 'direction_text': direction_text},
+                'cooldown_logic': 'align_to_period_end',
+                'fallback_multiplier': consecutive_params.get('volume_multiplier', 1.5),
+                'volume_must_confirm': consecutive_params.get('volume_confirm', False)
+            }
+            _prepare_and_send_notification(config, symbol, timeframe, df, signal_info)
 
     except Exception as e:
-        logger.error(f"❌ 在 {symbol} {timeframe} (高级连续K线信号) 中出错: {e}", exc_info=True)
+        logger.error(f"❌ 在 {symbol} {timeframe} (无状态连续K线信号) 中出错: {e}", exc_info=True)

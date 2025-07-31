@@ -1,41 +1,9 @@
-# --- START OF FILE app/utils.py (RESTORED to TEXT-ONLY VERSION) ---
 import json
 from datetime import datetime, timedelta, timezone
-
 from loguru import logger
-
 from app.state import alerted_states
 
 ALERT_STATUS_FILE = 'cooldown_status.json'
-
-
-def load_alert_states():
-    try:
-        with open(ALERT_STATUS_FILE, 'r') as f:
-            data = json.load(f)
-        loaded_states = {k: datetime.fromisoformat(v).replace(tzinfo=timezone.utc) if datetime.fromisoformat(
-            v).tzinfo is None else datetime.fromisoformat(v) for k, v in data.items()}
-        now_utc = datetime.now(timezone.utc)
-        initial_count = len(loaded_states)
-        alerted_states.clear()
-        alerted_states.update({k: v for k, v in loaded_states.items() if v > now_utc})
-        logger.info(f"✅ 成功加载冷却状态。有效条目: {len(alerted_states)} (从 {initial_count} 个中加载)")
-    except (FileNotFoundError, json.JSONDecodeError):
-        logger.info("ℹ️ 未找到或无法解析冷却状态文件。");
-        alerted_states.clear()
-
-
-def save_alert_states():
-    try:
-        now_utc = datetime.now(timezone.utc)
-        active_states = {k: v for k, v in alerted_states.items() if v > now_utc}
-        alerted_states.clear()
-        alerted_states.update(active_states)
-        with open(ALERT_STATUS_FILE, 'w') as f:
-            json.dump({k: v.isoformat() for k, v in active_states.items()}, f, indent=4)
-    except Exception as e:
-        logger.error(f"❌ 保存冷却状态到文件时出错: {e}", exc_info=True)
-
 
 def timeframe_to_minutes(tf_str):
     try:
@@ -51,7 +19,50 @@ def timeframe_to_minutes(tf_str):
         return 0
 
 
-def calculate_cooldown_time(minutes):
-    if minutes <= 0: return datetime.now(timezone.utc) + timedelta(minutes=1)
-    return datetime.now(timezone.utc) + timedelta(minutes=minutes)
-# --- END OF FILE app/utils.py (RESTORED to TEXT-ONLY VERSION) ---
+# 【核心修改】这是最终的、支持对齐的冷却时间计算函数
+def calculate_cooldown_time(minutes, align_to_period_end=True):
+    """
+    计算冷却到期时间。
+
+    :param minutes: 冷却的分钟数。
+    :param align_to_period_end: 如果为True，则将到期时间对齐到当前K线周期的结束。
+                                minutes 参数此时代表K线周期。
+    :return: datetime 对象。
+    """
+    now_utc = datetime.now(timezone.utc)
+
+    if not align_to_period_end:
+        # 传统模式：从现在开始加上指定的分钟数
+        if minutes <= 0: return now_utc + timedelta(minutes=1)
+        return now_utc + timedelta(minutes=minutes)
+    else:
+        # 新模式：对齐到周期结束
+        # 此时 minutes 参数代表的是时间周期的分钟数
+        period_minutes = int(minutes)
+        if period_minutes <= 0: return now_utc + timedelta(minutes=1)
+
+        # 处理日线及以上周期
+        if period_minutes >= 1440:  # 1天 = 1440分钟
+            # 对齐到当天的午夜 (UTC)
+            period_end_time = (now_utc + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+            return period_end_time
+
+        # 计算自一天开始以来的总分钟数
+        total_minutes_of_day = now_utc.hour * 60 + now_utc.minute
+
+        # 计算当前时间点所属周期的开始分钟数
+        start_minute_of_period = (total_minutes_of_day // period_minutes) * period_minutes
+
+        # 构建周期开始时间
+        period_start_time = now_utc.replace(hour=start_minute_of_period // 60,
+                                            minute=start_minute_of_period % 60,
+                                            second=0, microsecond=0)
+
+        # 周期结束时间 = 周期开始时间 + 周期长度
+        period_end_time = period_start_time + timedelta(minutes=period_minutes)
+
+        # 如果计算出的结束时间早于现在（发生在边界情况，如21:59:59），则推到下一个周期
+        if period_end_time < now_utc:
+            period_end_time += timedelta(minutes=period_minutes)
+
+        return period_end_time

@@ -11,18 +11,17 @@ from loguru import logger
 from app.config import load_config
 from app.logging_setup import setup_logging
 from app.services.notification_service import notification_consumer
-# 【核心修改】导入新的状态管理函数
-from app.state import load_alert_states, save_alert_states, load_trend_statuses, save_trend_statuses
+# 【修改】不再需要导入 trend_status 函数
+from app.state import load_alert_states, save_alert_states
 from app.tasks.daily_reporter import run_daily_report
 from app.tasks.signal_scanner import run_signal_check_cycle
 
 
 def handle_exit(signum, frame):
     logger.info("\n👋 收到退出信号，正在保存状态并优雅关闭...")
-    # 【核心修改】在退出前保存所有状态
+    # 【修改】只保存冷却状态
     save_alert_states()
-    save_trend_statuses()
-    logger.info("✅ 所有状态已保存。程序退出。")
+    logger.info("✅ 冷却状态已保存。程序退出。")
     sys.exit(0)
 
 
@@ -36,9 +35,8 @@ def main():
         return
     logger = setup_logging(config.get('app_settings', {}).get("log_level", "INFO"))
 
-    # 【核心修改】加载所有持久化的状态
+    # 【修改】只加载冷却状态
     load_alert_states()
-    load_trend_statuses()
 
     app_conf = config.get('app_settings', {})
     try:
