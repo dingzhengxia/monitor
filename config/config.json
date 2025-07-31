@@ -16,23 +16,14 @@
     "static_symbols": [
       "BTC",
       "ETH",
-      "SOL",
-      "BNB",
-      "XRP",
-      "ADA",
-      "DOGE",
-      "TRX",
-      "AVAX",
-      "LINK",
-      "UNI",
-      "AAVE"
+      "SOL"
     ],
     "dynamic_scan": {
       "enabled": true,
       "top_n_for_signals": 100,
       "primary_quote_currency": "USDT",
       "cross_market_filter": {
-        "enabled": true,
+        "enabled": false,
         "must_exist_in": [
           "USDC"
         ]
@@ -93,12 +84,13 @@
       "atr_multiplier": 1
     },
     "kdj_cross": {
-      "enabled": false,
+      "enabled": true,
       "fast_k": 9,
       "slow_k": 3,
       "slow_d": 3,
       "volume_confirm": true,
-      "volume_multiplier": 2
+      "volume_multiplier": 2,
+      "exclude_timeframes": ["15m"]
     },
     "volatility_breakout": {
       "enabled": true,
@@ -138,14 +130,15 @@
         "enabled": true,
         "method": "linear_stepped",
         "min_count": 5,
-        "max_count": 12,
+        "max_count": 10,
         "apply_to_rank_n": 100,
-        "rank_step_size": 3,
+        "rank_step_size": 10,
         "default_count": 9
       },
       "min_consecutive_candles": 4,
       "volume_confirm": false,
-      "volume_multiplier": 1.5
+      "volume_multiplier": 1.5,
+      "exclude_timeframes": ["15m"]
     }
   },
   "daily_report": {

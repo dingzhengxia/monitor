@@ -1,4 +1,4 @@
-# --- START OF FILE app/tasks/signal_scanner.py (FINAL SIMPLIFIED LOGIC) ---
+# --- START OF FILE app/tasks/signal_scanner.py (WITH EXCLUDE TIMEFRAMES LOGIC) ---
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from loguru import logger
@@ -18,11 +18,8 @@ def _get_symbol_in_primary_market(base_symbol, config):
     market_type = config.get('app_settings', {}).get('default_market_type', 'swap')
 
     if market_type == 'swap':
-        # 币安永续合约通常格式为 BASE/USDT:USDT
-        # 兼容两种格式，一种是带USDT后缀，一种不带
         if primary_quote == "USDT":
             return f"{base_symbol.upper()}/USDT:USDT"
-        # 其他计价货币，如BUSD
         return f"{base_symbol.upper()}/{primary_quote}:{primary_quote}"
     else:  # spot
         return f"{base_symbol.upper()}/{primary_quote}"
@@ -31,7 +28,6 @@ def _get_symbol_in_primary_market(base_symbol, config):
 def _update_cache(exchange, config):
     logger.info(" (扫描任务)正在更新热门币种缓存...")
 
-    # 步骤 1: 获取动态扫描列表
     dyn_scan_conf = config.get('market_settings', {}).get('dynamic_scan', {})
     dynamic_symbols_list = get_top_n_symbols_by_volume(
         exchange,
@@ -41,14 +37,10 @@ def _update_cache(exchange, config):
         config=config
     )
 
-    # 步骤 2: 获取白名单 (static_symbols) 并转换为完整交易对名称
     static_bases = config.get('market_settings', {}).get('static_symbols', [])
     static_symbols_list = [_get_symbol_in_primary_market(base, config) for base in static_bases]
 
-    # 步骤 3: 合并列表，白名单享有豁免权
-    # 将动态列表（已按成交量排序）放在前面
     final_list = list(dynamic_symbols_list)
-    # 将不在动态列表中的白名单项追加到末尾
     for s in static_symbols_list:
         if s not in final_list:
             final_list.append(s)
@@ -72,7 +64,10 @@ STRATEGY_MAP = {
 def _check_symbol_all_strategies(symbol, exchange, config):
     logger.debug(f"--- [Thread] 正在检查: {symbol} ---")
 
-    for timeframe in config['market_settings']['timeframes']:
+    # 获取全局的时间周期列表
+    global_timeframes = config.get('market_settings', {}).get('timeframes', ['1h', '4h'])
+
+    for timeframe in global_timeframes:
         max_limit = max(s['limit'] for s in STRATEGY_MAP.values())
         df = fetch_ohlcv_data(exchange, symbol, timeframe, max_limit)
 
@@ -81,11 +76,23 @@ def _check_symbol_all_strategies(symbol, exchange, config):
             continue
 
         for name, strategy_info in STRATEGY_MAP.items():
-            if config['strategy_params'].get(name, {}).get('enabled', False):
-                try:
-                    strategy_info['func'](exchange, symbol, timeframe, config, df.copy())
-                except Exception as e:
-                    logger.error(f"执行策略 {name} on {symbol} {timeframe} 时发生顶层错误: {e}", exc_info=True)
+            strategy_params = config['strategy_params'].get(name, {})
+
+            # 如果策略未启用，则跳过
+            if not strategy_params.get('enabled', False):
+                continue
+
+            # 【核心修改】检查当前时间周期是否在策略的排除列表中
+            exclude_timeframes = strategy_params.get('exclude_timeframes', [])
+            if timeframe in exclude_timeframes:
+                logger.trace(f"策略 {name} 已配置为在 {timeframe} 周期上跳过，故不执行。")
+                continue  # 跳过当前策略，继续检查下一个
+
+            try:
+                # 执行策略
+                strategy_info['func'](exchange, symbol, timeframe, config, df.copy())
+            except Exception as e:
+                logger.error(f"执行策略 {name} on {symbol} {timeframe} 时发生顶层错误: {e}", exc_info=True)
 
     return f"已完成 {symbol} 的检查"
 
@@ -94,14 +101,11 @@ def run_signal_check_cycle(exchange, config):
     logger.info("=" * 60)
     logger.info(f"🔄 开始执行动态热点监控循环...")
 
-    # 根据配置构建最终的监控列表
     dyn_scan_enabled = config.get('market_settings', {}).get('dynamic_scan', {}).get('enabled', False)
 
     if dyn_scan_enabled:
-        # 动态扫描开启：获取动态列表 + 合并静态白名单
         _update_cache(exchange, config)
     else:
-        # 动态扫描关闭：只使用静态白名单
         static_bases = config.get('market_settings', {}).get('static_symbols', [])
         static_symbols_list = [_get_symbol_in_primary_market(base, config) for base in static_bases]
         cached_top_symbols.clear()
