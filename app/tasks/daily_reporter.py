@@ -1,4 +1,4 @@
-# --- START OF FILE app/tasks/daily_reporter.py (FINAL SIMPLIFIED LOGIC) ---
+# --- START OF FILE app/tasks/daily_reporter.py (WITH IGNORE_FILTERS FLAG) ---
 import time
 from datetime import datetime, timedelta
 
@@ -25,26 +25,25 @@ def _get_symbol_in_primary_market(base_symbol, config):
 def _update_cache_for_report(exchange, config):
     logger.info(" (报告任务)正在更新热门币种缓存...")
 
-    # 步骤 1: 获取动态扫描列表
     dyn_scan_conf = config.get('market_settings', {}).get('dynamic_scan', {})
     report_conf = config.get('daily_report', {})
     top_n_for_signals = dyn_scan_conf.get('top_n_for_signals', 100)
     top_n_for_report = report_conf.get('top_n_by_volume', 100)
     fetch_n = max(top_n_for_signals, top_n_for_report)
 
+    # 【核心修改】: 调用时传递 ignore_adv_filters=True
     dynamic_symbols_list = get_top_n_symbols_by_volume(
         exchange,
-        top_n=fetch_n,  # 报告任务需要更多币种
+        top_n=fetch_n,
         exclude_list=[s.upper() for s in dyn_scan_conf.get('exclude_symbols', [])],
         market_type=config.get('app_settings', {}).get('default_market_type', 'swap'),
-        config=config
+        config=config,
+        ignore_adv_filters=True  # <--- 告诉函数忽略配置文件中的跨市场等高级筛选
     )
 
-    # 步骤 2: 获取白名单 (static_symbols) 并转换为完整交易对名称
     static_bases = config.get('market_settings', {}).get('static_symbols', [])
     static_symbols_list = [_get_symbol_in_primary_market(base, config) for base in static_bases]
 
-    # 步骤 3: 合并并更新全局缓存
     final_list = list(dynamic_symbols_list)
     for s in static_symbols_list:
         if s not in final_list:
@@ -58,7 +57,6 @@ def _update_cache_for_report(exchange, config):
 def run_daily_report(exchange, config):
     logger.info("--- ☀️ 开始执行每日宏观市场报告 (合约市场) ---")
     try:
-        # 报告任务总是假设动态扫描是其一部分，因为它需要热门币种数据
         _update_cache_for_report(exchange, config)
         if not cached_top_symbols:
             logger.warning("报告任务中止：热门币种缓存为空。")

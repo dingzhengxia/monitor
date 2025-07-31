@@ -23,7 +23,7 @@
       "top_n_for_signals": 100,
       "primary_quote_currency": "USDT",
       "cross_market_filter": {
-        "enabled": false,
+        "enabled": true,
         "must_exist_in": [
           "USDC"
         ]

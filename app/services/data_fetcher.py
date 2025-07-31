@@ -1,36 +1,44 @@
-# --- START OF FILE app/services/data_fetcher.py (FINAL CORRECTED LOGIC) ---
+# --- START OF FILE app/services/data_fetcher.py (WITH IGNORE_FILTERS FLAG) ---
 import time
 import pandas as pd
 from loguru import logger
 from collections import defaultdict
 
 
-def get_top_n_symbols_by_volume(exchange, top_n=100, exclude_list=[], market_type='swap', retries=5, config=None):
+def get_top_n_symbols_by_volume(exchange, top_n=100, exclude_list=[], market_type='swap', retries=5, config=None,
+                                ignore_adv_filters=False):
     # 步骤 0: 解析配置，并提供安全的默认值
     scan_conf = config.get('market_settings', {}).get('dynamic_scan', {}) if config else {}
     primary_quote = scan_conf.get('primary_quote_currency', 'USDT').upper()
 
-    cross_filter_conf = scan_conf.get('cross_market_filter', {})
-    # 关键修正：确保即使 must_exist_in 为空，enabled:true 也能被正确识别
-    cross_filter_enabled = cross_filter_conf.get('enabled', False)
-    must_exist_quotes = set([q.upper() for q in cross_filter_conf.get('must_exist_in', [])])
+    # 【核心修改】: 根据 ignore_adv_filters 标志决定是否启用高级筛选
+    cross_filter_enabled = False
+    if not ignore_adv_filters:
+        cross_filter_conf = scan_conf.get('cross_market_filter', {})
+        cross_filter_enabled = cross_filter_conf.get('enabled', False)
+
+    must_exist_quotes = set([q.upper() for q in scan_conf.get('cross_market_filter', {}).get('must_exist_in', [])])
 
     logger.info(f"...正在从 {exchange.id} 获取所有交易对的24h行情数据 (目标市场: {market_type})...")
     logger.info(f"主计价货币: {primary_quote}")
 
-    # 修正日志逻辑，更清晰地反映配置状态
-    if cross_filter_enabled:
+    if cross_filter_enabled and not ignore_adv_filters:
         if must_exist_quotes:
             logger.info(f"🎯 跨市场验证已激活。币种必须同时存在于: {primary_quote} AND {', '.join(must_exist_quotes)}")
         else:
             logger.warning("⚠️ 跨市场验证已启用，但 'must_exist_in' 列表为空。将只扫描主市场。")
     else:
-        logger.info(f"常规动态扫描模式。")
+        if ignore_adv_filters:
+            logger.info(f"常规动态扫描模式 (已忽略高级筛选)。")
+        else:
+            logger.info(f"常规动态扫描模式。")
 
     for i in range(retries):
         try:
             tickers = exchange.fetch_tickers()
             logger.info(f"...获取成功，共 {len(tickers)} 个ticker，正在处理...")
+
+            # ... (后续代码与之前版本完全相同) ...
 
             # 步骤 1: 构建地图
             base_to_quotes_map = defaultdict(set)
@@ -60,15 +68,13 @@ def get_top_n_symbols_by_volume(exchange, top_n=100, exclude_list=[], market_typ
             # 步骤 2: 筛选动态候选币种
             candidate_bases = set()
 
-            # 修正的核心逻辑：即使 must_exist_in 为空，只要 enabled 为 true，就应该执行过滤
-            if cross_filter_enabled and must_exist_quotes:
+            if cross_filter_enabled and must_exist_quotes and not ignore_adv_filters:
                 required_quotes_for_check = must_exist_quotes.union({primary_quote})
                 for base, existing_quotes in base_to_quotes_map.items():
                     if required_quotes_for_check.issubset(existing_quotes):
                         candidate_bases.add(base)
                 logger.info(f"通过跨市场验证的币种有 {len(candidate_bases)} 个。")
             else:
-                # 在所有其他情况下（包括常规模式，或跨市场验证启用但列表为空），都只考虑主市场的币种
                 candidate_bases = set(primary_market_tickers.keys())
 
             # 步骤 3: 排序并返回动态列表
