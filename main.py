@@ -1,4 +1,3 @@
-# --- START OF FILE main.py (UPDATED V46.1 - FULL CODE) ---
 import signal
 import sys
 import threading
@@ -12,13 +11,18 @@ from loguru import logger
 from app.config import load_config
 from app.logging_setup import setup_logging
 from app.services.notification_service import notification_consumer
-from app.state import load_alert_states
+# 【核心修改】导入新的状态管理函数
+from app.state import load_alert_states, save_alert_states, load_trend_statuses, save_trend_statuses
 from app.tasks.daily_reporter import run_daily_report
 from app.tasks.signal_scanner import run_signal_check_cycle
 
 
 def handle_exit(signum, frame):
-    logger.info("\n👋 收到退出信号，程序正在优雅关闭...")
+    logger.info("\n👋 收到退出信号，正在保存状态并优雅关闭...")
+    # 【核心修改】在退出前保存所有状态
+    save_alert_states()
+    save_trend_statuses()
+    logger.info("✅ 所有状态已保存。程序退出。")
     sys.exit(0)
 
 
@@ -31,7 +35,11 @@ def main():
         print(f"错误: {e}");
         return
     logger = setup_logging(config.get('app_settings', {}).get("log_level", "INFO"))
+
+    # 【核心修改】加载所有持久化的状态
     load_alert_states()
+    load_trend_statuses()
+
     app_conf = config.get('app_settings', {})
     try:
         exchange = getattr(ccxt, app_conf.get('exchange'))(
@@ -79,4 +87,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-# --- END OF FILE main.py (UPDATED V46.1 - FULL CODE) ---
