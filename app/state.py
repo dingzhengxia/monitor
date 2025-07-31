@@ -1,4 +1,3 @@
-# --- START OF FILE app/state.py (ULTIMATE CORRECTED V46.2 - FULL CODE) ---
 import json
 from datetime import datetime, timezone
 import queue
@@ -10,6 +9,7 @@ ALERT_STATUS_FILE = 'cooldown_status.json'
 alerted_states = {}
 cached_top_symbols = []
 notification_queue = queue.Queue()
+consecutive_trends_status = {}  # <--- 新增的状态变量
 
 
 # 状态操作函数
@@ -41,4 +41,3 @@ def save_alert_states():
             json.dump({k: v.isoformat() for k, v in active_states.items()}, f, indent=4)
     except Exception as e:
         logger.error(f"❌ 保存冷却状态到文件时出错: {e}", exc_info=True)
-# --- END OF FILE app/state.py (ULTIMATE CORRECTED V46.2 - FULL CODE) ---
