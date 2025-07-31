@@ -14,6 +14,7 @@ from app.analysis.indicators import (
 from app.utils import calculate_cooldown_time
 
 
+# 【核心修改】升级此函数
 def _prepare_and_send_notification(config, symbol, timeframe, df, signal_info):
     now_utc = datetime.now(timezone.utc)
     tf_minutes = timeframe_to_minutes(timeframe)
@@ -41,13 +42,19 @@ def _prepare_and_send_notification(config, symbol, timeframe, df, signal_info):
     # 添加通用信息
     trend_status, trend_emoji = get_current_trend(df.copy(), timeframe, params)
     message_data['trend_message'] = f"**当前趋势**: {trend_emoji} {trend_status}\n\n"
-    message_data['vol_text'] = vol_text if is_vol_over else ""
+
+    # 新逻辑：根据 'always_show_volume' 标志决定是否显示成交量
+    if signal_info.get('always_show_volume', False):
+        message_data['vol_text'] = f"\n---\n{vol_text}"  # 总是显示，并用分隔线
+    elif is_vol_over:
+        message_data['vol_text'] = f"\n---\n{vol_text}"  # 只在放量时显示
+    else:
+        message_data['vol_text'] = ""  # 其他情况不显示
 
     message = signal_info['message_template'].format(**message_data)
 
     send_alert(config, title, message, symbol)
 
-    # 冷却逻辑分支
     if signal_info.get('cooldown_logic') == 'align_to_period_end':
         alerted_states[alert_key] = calculate_cooldown_time(tf_minutes, align_to_period_end=True)
     else:
@@ -338,18 +345,15 @@ def check_consecutive_candles(exchange, symbol, timeframe, config, df):
         fallback_n = consecutive_params.get('min_consecutive_candles', 4)
         min_n_to_alert = get_dynamic_consecutive_candles(symbol, config, fallback_n)
 
-        # 至少需要 n+1 根K线来判断反转
         if len(df) < min_n_to_alert + 1:
             return
 
-        # --- 辅助函数：从指定位置向前回溯计数 ---
         def count_backwards(start_index, direction):
             count = 0
             for i in range(start_index, -1, -1):
                 candle = df.iloc[i]
                 is_up = candle['close'] > candle['open']
                 is_down = candle['close'] < candle['open']
-
                 current_direction = 'up' if is_up else ('down' if is_down else 'none')
                 if current_direction == direction:
                     count += 1
@@ -357,17 +361,14 @@ def check_consecutive_candles(exchange, symbol, timeframe, config, df):
                     break
             return count
 
-        # --- 分析最新的两根已完成K线 ---
         last_candle = df.iloc[-2]
         prev_candle = df.iloc[-3]
-
         is_last_up = last_candle['close'] > last_candle['open']
         is_last_down = last_candle['close'] < last_candle['open']
         is_prev_up = prev_candle['close'] > prev_candle['open']
         is_prev_down = prev_candle['close'] < prev_candle['open']
 
-        # --- 1. 检查反转信号 ---
-        # 从下跌反转为上涨
+        # 检查反转
         if is_last_up and is_prev_down:
             prev_down_trend_count = count_backwards(len(df) - 3, 'down')
             if prev_down_trend_count >= min_n_to_alert:
@@ -376,14 +377,15 @@ def check_consecutive_candles(exchange, symbol, timeframe, config, df):
                     'alert_key': alert_key,
                     'title_template': f"🔄 趋势反转: {symbol} ({timeframe})",
                     'message_template': ("{trend_message}**信号**: **下跌趋势终结**!\n\n"
-                                         f"> 连续下跌 **{prev_down_trend_count}** 根K线后，出现首根上涨K线。\n"
-                                         f"> **当前价**: {last_candle['close']:.4f}"),
+                                       f"> 连续下跌 **{prev_down_trend_count}** 根K线后，出现首根上涨K线。\n"
+                                       f"> **当前价**: {last_candle['close']:.4f}"
+                                       "{vol_text}"),
                     'template_data': {},
-                    'cooldown_logic': 'align_to_period_end'
+                    'cooldown_logic': 'align_to_period_end',
+                    'always_show_volume': True # 强制显示成交量
                 }
                 _prepare_and_send_notification(config, symbol, timeframe, df, signal_info)
 
-        # 从上涨反转为下跌
         elif is_last_down and is_prev_up:
             prev_up_trend_count = count_backwards(len(df) - 3, 'up')
             if prev_up_trend_count >= min_n_to_alert:
@@ -392,17 +394,18 @@ def check_consecutive_candles(exchange, symbol, timeframe, config, df):
                     'alert_key': alert_key,
                     'title_template': f"🔄 趋势反转: {symbol} ({timeframe})",
                     'message_template': ("{trend_message}**信号**: **上涨趋势终结**!\n\n"
-                                         f"> 连续上涨 **{prev_up_trend_count}** 根K线后，出现首根下跌K线。\n"
-                                         f"> **当前价**: {last_candle['close']:.4f}"),
+                                       f"> 连续上涨 **{prev_up_trend_count}** 根K线后，出现首根下跌K线。\n"
+                                       f"> **当前价**: {last_candle['close']:.4f}"
+                                       "{vol_text}"),
                     'template_data': {},
-                    'cooldown_logic': 'align_to_period_end'
+                    'cooldown_logic': 'align_to_period_end',
+                    'always_show_volume': True # 强制显示成交量
                 }
                 _prepare_and_send_notification(config, symbol, timeframe, df, signal_info)
 
-        # --- 2. 检查持续信号 ---
+        # 检查持续
         current_trend_count = 0
         current_direction = None
-
         if is_last_up:
             current_direction = 'up'
             current_trend_count = count_backwards(len(df) - 2, 'up')
@@ -416,14 +419,15 @@ def check_consecutive_candles(exchange, symbol, timeframe, config, df):
             emoji = "📈" if current_direction == 'up' else "📉"
             signal_info = {
                 'alert_key': alert_key,
-                'title_template': f"{emoji} 趋势持续: {symbol} ({timeframe})",
+                'title_template': f"{emoji} 趋势持续: {{vol_label}}{symbol} ({timeframe})",
                 'message_template': ("{trend_message}**信号**: 价格已连续 **{current_trend_count}** 个周期{direction_text}。\n\n"
-                                     f"> **当前价**: {last_candle['close']:.4f}\n\n"
-                                     "{vol_text}"),
+                                   f"> **当前价**: {last_candle['close']:.4f}"
+                                   "{vol_text}"),
                 'template_data': {'current_trend_count': current_trend_count, 'direction_text': direction_text},
                 'cooldown_logic': 'align_to_period_end',
                 'fallback_multiplier': consecutive_params.get('volume_multiplier', 1.5),
-                'volume_must_confirm': consecutive_params.get('volume_confirm', False)
+                'volume_must_confirm': consecutive_params.get('volume_confirm', False),
+                'always_show_volume': True # 强制显示成交量
             }
             _prepare_and_send_notification(config, symbol, timeframe, df, signal_info)
 
