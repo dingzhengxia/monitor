@@ -4,7 +4,6 @@ import threading
 
 import ccxt
 from apscheduler.schedulers.blocking import BlockingScheduler
-# 【核心修改】导入 CronTrigger
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 from loguru import logger
@@ -15,6 +14,8 @@ from app.services.notification_service import notification_consumer
 from app.state import load_alert_states, save_alert_states
 from app.tasks.periodic_reporter import run_periodic_report
 from app.tasks.signal_scanner import run_signal_check_cycle
+# 【核心修改】导入 timeframe_to_minutes
+from app.utils import timeframe_to_minutes
 
 
 def handle_exit(signum, frame):
@@ -66,28 +67,29 @@ def main():
 
     scheduler = BlockingScheduler(timezone='Asia/Shanghai')
 
-    # 【核心修改】更新报告任务的调度逻辑，实现整点对齐
+    # 【核心修改】更新报告任务的调度逻辑，以解析时间周期字符串
     if config.get('periodic_report', {}).get('enabled', False):
         report_conf = config['periodic_report']
-        run_interval_hours = report_conf.get('run_every_hours', 4)
+        run_interval_str = report_conf.get('run_interval', '4h')
 
-        # --- 动态生成 Cron 触发时间 ---
-        # 确保间隔是有效的
-        valid_intervals = [1, 2, 3, 4, 6, 8, 12, 24]
-        if run_interval_hours not in valid_intervals:
-            logger.warning(f"⚠️ 无效的报告间隔 {run_interval_hours} 小时，将默认使用4小时。")
+        # 将 "4h", "1h" 等字符串转换为小时数
+        run_interval_minutes = timeframe_to_minutes(run_interval_str)
+        if run_interval_minutes == 0 or 1440 % run_interval_minutes != 0:
+            logger.warning(
+                f"⚠️ 无效或不支持的报告间隔 '{run_interval_str}'，将默认使用4小时。请使用能被24小时整除的周期 (如 1h, 2h, 3h, 4h, 6h, 8h, 12h, 1d)。")
             run_interval_hours = 4
+        else:
+            run_interval_hours = run_interval_minutes // 60
 
-        # 计算一天中所有对齐的触发小时
+        # 动态生成 Cron 触发时间
         trigger_hours = [str(h) for h in range(0, 24, run_interval_hours)]
         trigger_hours_str = ",".join(trigger_hours)
-        # ---
 
         scheduler.add_job(run_periodic_report,
-                          CronTrigger(hour=trigger_hours_str, minute='0', second='5'),  # 在整点后5秒触发，确保数据已准备好
+                          CronTrigger(hour=trigger_hours_str, minute='0', second='5'),  # 在整点后5秒触发
                           args=[exchange, config],
                           name="PeriodicReport")
-        logger.info(f"   - 周期性市场报告已添加，将在每天的 {trigger_hours_str} 点整运行。")
+        logger.info(f"   - 周期性市场报告已添加，将在每天的 {trigger_hours_str} 点整运行 (间隔: {run_interval_str})。")
 
     interval_minutes = app_conf.get('check_interval_minutes', 15)
     scheduler.add_job(run_signal_check_cycle, IntervalTrigger(minutes=interval_minutes), args=[exchange, config],

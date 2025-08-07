@@ -58,7 +58,8 @@ def run_periodic_report(exchange, config):
             return
 
         report_conf = config.get('periodic_report', {})
-        report_tf = report_conf.get('report_timeframe', '4h')
+        # 【核心修改】直接从 run_interval 获取K线周期
+        report_tf = report_conf.get('run_interval', '4h')
         symbols_to_scan = cached_top_symbols[:report_conf.get('top_n_by_volume', 100)]
 
         gainers_list, consecutive_up_list, volume_ratio_list = [], [], []

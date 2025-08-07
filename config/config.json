@@ -23,7 +23,7 @@
       "top_n_for_signals": 100,
       "primary_quote_currency": "USDT",
       "cross_market_filter": {
-        "enabled": true,
+        "enabled": false,
         "must_exist_in": [
           "USDC"
         ]
@@ -94,7 +94,7 @@
       "exclude_timeframes": ["1d"]
     },
     "volatility_breakout": {
-      "enabled": false,
+      "enabled": true,
       "atr_period": 14,
       "atr_multiplier": 2.5,
       "volume_confirm": true,
@@ -147,8 +147,7 @@
   },
   "periodic_report": {
     "enabled": true,
-    "run_every_hours": 4,
-    "report_timeframe": "4h",
+    "run_interval": "4h",
     "top_n_by_volume": 300,
     "top_n_gainers": 10,
     "min_consecutive_candles": 2,
