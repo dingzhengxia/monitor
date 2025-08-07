@@ -16,7 +16,13 @@
     "static_symbols": [
       "BTC",
       "ETH",
-      "SOL"
+      "XRP",
+      "BNB",
+      "SOL",
+      "TRX",
+      "DOGE",
+      "ADA",
+      "HYPE"
     ],
     "dynamic_scan": {
       "enabled": true,
