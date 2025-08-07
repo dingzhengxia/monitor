@@ -14,7 +14,6 @@ from app.services.notification_service import notification_consumer
 from app.state import load_alert_states, save_alert_states
 from app.tasks.periodic_reporter import run_periodic_report
 from app.tasks.signal_scanner import run_signal_check_cycle
-# 【核心修改】导入 timeframe_to_minutes
 from app.utils import timeframe_to_minutes
 
 
@@ -58,38 +57,46 @@ def main():
 
     logger.info("\n📌 首次运行主监控循环...")
     run_signal_check_cycle(exchange, config)
-    if config.get('periodic_report', {}).get('enabled', False):
-        logger.info("\n📌 首次运行市场报告...")
-        try:
-            run_periodic_report(exchange, config)
-        except Exception as e:
-            logger.error(f"首次市场报告失败: {e}", exc_info=True)
+
+    # 首次运行时，为所有启用的报告都运行一次
+    report_configs = config.get('periodic_reports', [])
+    if report_configs:
+        logger.info("\n📌 首次运行所有已启用的市场报告...")
+        for report_conf in report_configs:
+            if report_conf.get('enabled', False):
+                try:
+                    run_periodic_report(exchange, config, report_conf)
+                except Exception as e:
+                    logger.error(f"首次运行 '{report_conf.get('report_name')}' 失败: {e}", exc_info=True)
 
     scheduler = BlockingScheduler(timezone='Asia/Shanghai')
 
-    # 【核心修改】更新报告任务的调度逻辑，以解析时间周期字符串
-    if config.get('periodic_report', {}).get('enabled', False):
-        report_conf = config['periodic_report']
-        run_interval_str = report_conf.get('run_interval', '4h')
+    if report_configs:
+        logger.info("正在配置周期性报告任务...")
+        for idx, report_conf in enumerate(report_configs):
+            if report_conf.get('enabled', False):
+                report_name = report_conf.get('report_name', f'报告任务-{idx + 1}')
+                run_interval_str = report_conf.get('run_interval', '4h')
 
-        # 将 "4h", "1h" 等字符串转换为小时数
-        run_interval_minutes = timeframe_to_minutes(run_interval_str)
-        if run_interval_minutes == 0 or 1440 % run_interval_minutes != 0:
-            logger.warning(
-                f"⚠️ 无效或不支持的报告间隔 '{run_interval_str}'，将默认使用4小时。请使用能被24小时整除的周期 (如 1h, 2h, 3h, 4h, 6h, 8h, 12h, 1d)。")
-            run_interval_hours = 4
-        else:
-            run_interval_hours = run_interval_minutes // 60
+                run_interval_minutes = timeframe_to_minutes(run_interval_str)
+                if run_interval_minutes == 0 or (run_interval_minutes < 1440 and 1440 % run_interval_minutes != 0):
+                    logger.error(
+                        f"❌ 报告 '{report_name}' 的间隔 '{run_interval_str}' 无效 (无法被24小时整除)，将跳过此任务。")
+                    continue
 
-        # 动态生成 Cron 触发时间
-        trigger_hours = [str(h) for h in range(0, 24, run_interval_hours)]
-        trigger_hours_str = ",".join(trigger_hours)
+                if run_interval_str == '1d':
+                    # 日报，在北京时间每天早上8点运行
+                    trigger = CronTrigger(hour='8', minute='0', second='10')
+                else:  # 小时报告
+                    run_interval_hours = run_interval_minutes // 60
+                    trigger_hours = ",".join([str(h) for h in range(0, 24, run_interval_hours)])
+                    trigger = CronTrigger(hour=trigger_hours, minute='0', second='10')
 
-        scheduler.add_job(run_periodic_report,
-                          CronTrigger(hour=trigger_hours_str, minute='0', second='5'),  # 在整点后5秒触发
-                          args=[exchange, config],
-                          name="PeriodicReport")
-        logger.info(f"   - 周期性市场报告已添加，将在每天的 {trigger_hours_str} 点整运行 (间隔: {run_interval_str})。")
+                scheduler.add_job(run_periodic_report,
+                                  trigger,
+                                  args=[exchange, config, report_conf],
+                                  name=report_name)
+                logger.info(f"   - ✅ 已添加 '{report_name}'，调度规则: {trigger}。")
 
     interval_minutes = app_conf.get('check_interval_minutes', 15)
     scheduler.add_job(run_signal_check_cycle, IntervalTrigger(minutes=interval_minutes), args=[exchange, config],

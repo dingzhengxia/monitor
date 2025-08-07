@@ -19,10 +19,10 @@ def _get_symbol_in_primary_market(base_symbol, config):
         return f"{base_symbol.upper()}/{primary_quote}"
 
 
-def _update_cache_for_report(exchange, config):
-    logger.info(" (报告任务)正在更新热门币种缓存...")
+def _update_cache_for_report(exchange, config, report_conf):
+    report_name = report_conf.get("report_name", "报告任务")
+    logger.info(f" ({report_name})正在更新热门币种缓存...")
     dyn_scan_conf = config.get('market_settings', {}).get('dynamic_scan', {})
-    report_conf = config.get('periodic_report', {})
     top_n_for_signals = dyn_scan_conf.get('top_n_for_signals', 100)
     top_n_for_report = report_conf.get('top_n_by_volume', 100)
     fetch_n = max(top_n_for_signals, top_n_for_report)
@@ -46,24 +46,23 @@ def _update_cache_for_report(exchange, config):
 
     cached_top_symbols.clear()
     cached_top_symbols.extend(final_list)
-    logger.info(f"✅ (报告任务)热门币种缓存已更新，当前共监控 {len(cached_top_symbols)} 个交易对。")
+    logger.info(f"✅ ({report_name})热门币种缓存已更新，当前共监控 {len(cached_top_symbols)} 个交易对。")
 
 
-def run_periodic_report(exchange, config):
-    logger.info("--- 📊 开始执行周期性市场报告 (合约市场) ---")
+def run_periodic_report(exchange, config, report_conf):
+    report_name = report_conf.get("report_name", "周期报告")
+    logger.info(f"--- 📊 开始执行 '{report_name}' ---")
     try:
-        _update_cache_for_report(exchange, config)
+        _update_cache_for_report(exchange, config, report_conf)
         if not cached_top_symbols:
-            logger.warning("报告任务中止：热门币种缓存为空。")
+            logger.warning(f"'{report_name}' 中止：热门币种缓存为空。")
             return
 
-        report_conf = config.get('periodic_report', {})
-        # 【核心修改】直接从 run_interval 获取K线周期
         report_tf = report_conf.get('run_interval', '4h')
         symbols_to_scan = cached_top_symbols[:report_conf.get('top_n_by_volume', 100)]
 
         gainers_list, consecutive_up_list, volume_ratio_list = [], [], []
-        logger.info(f"...正在基于 {len(symbols_to_scan)} 个热门合约和 {report_tf} 周期生成报告...")
+        logger.info(f"...正在基于 {len(symbols_to_scan)} 个热门合约和 {report_tf} 周期生成 '{report_name}'...")
 
         required_len = 200
 
@@ -73,7 +72,6 @@ def run_periodic_report(exchange, config):
                 if df is None or len(df) < report_conf.get('volume_ma_period', 20) + 2:
                     continue
 
-                # 分析最新一根已完成的K线
                 last_closed_candle = df.iloc[-2]
                 if last_closed_candle['open'] > 0:
                     gainers_list.append({'symbol': symbol,
@@ -103,9 +101,8 @@ def run_periodic_report(exchange, config):
                 logger.debug(f"扫描 {symbol} 报告时出错: {e}")
                 continue
 
-        # 格式化报告标题
         now_str = datetime.now().strftime('%Y-%m-%d %H:%M')
-        title = f"📰 {now_str} ({report_tf}周期) 合约市场热点报告"
+        title = f"📰 {report_name} ({now_str}, {report_tf}周期)"
         message = ""
 
         if gainers_list:
@@ -133,6 +130,6 @@ def run_periodic_report(exchange, config):
         if message:
             send_alert(config, title, message, "Market Report")
 
-        logger.info("--- ✅ 周期性市场报告完成 ---")
+        logger.info(f"--- ✅ '{report_name}' 完成 ---")
     except Exception as e:
-        logger.error(f"❌ 执行周期性报告任务时发生严重错误: {e}", exc_info=True)
+        logger.error(f"❌ 执行 '{report_name}' 时发生严重错误: {e}", exc_info=True)

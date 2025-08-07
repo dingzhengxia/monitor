@@ -14,7 +14,6 @@ from app.analysis.indicators import (
 from app.utils import calculate_cooldown_time
 
 
-# 【核心修改】升级此函数
 def _prepare_and_send_notification(config, symbol, timeframe, df, signal_info):
     now_utc = datetime.now(timezone.utc)
     tf_minutes = timeframe_to_minutes(timeframe)
@@ -24,13 +23,25 @@ def _prepare_and_send_notification(config, symbol, timeframe, df, signal_info):
     if alerted_states.get(alert_key) and now_utc < alerted_states[alert_key]:
         return
 
-    vol_br_params = params.get('volume_breakout', {})
+    # --- 白名单豁免逻辑 ---
+    static_bases = config.get('market_settings', {}).get('static_symbols', [])
+    symbol_base = symbol.split('/')[0].split(':')[0]
+    is_static_symbol = symbol_base in static_bases
+
+    original_volume_confirm = signal_info.get('volume_must_confirm', False)
+    final_volume_confirm = False if is_static_symbol else original_volume_confirm
+
+    if is_static_symbol and original_volume_confirm:
+        logger.trace(f"[{symbol}] 是白名单币种，已豁免成交量确认。")
+    # --- 结束豁免逻辑 ---
+
+    vol_br_params = params.get('level_breakout', {})
     dynamic_multiplier = get_dynamic_volume_multiplier(symbol, config, signal_info.get('fallback_multiplier', 1.5))
     is_vol_over, vol_text, actual_vol_ratio = is_realtime_volume_over(
         df, tf_minutes, vol_br_params.get('volume_ma_period', 20), dynamic_multiplier
     )
 
-    if signal_info.get('volume_must_confirm', False) and not is_vol_over:
+    if final_volume_confirm and not is_vol_over:
         logger.debug(f"[{symbol}|{timeframe}] 信号 '{signal_info.get('log_name', 'N/A')}' 因成交量不足被过滤。")
         return
 
@@ -38,18 +49,15 @@ def _prepare_and_send_notification(config, symbol, timeframe, df, signal_info):
     title = signal_info['title_template'].format(vol_label=volume_label).replace("  ", " ")
 
     message_data = signal_info.get('template_data', {})
-
-    # 添加通用信息
     trend_status, trend_emoji = get_current_trend(df.copy(), timeframe, params)
     message_data['trend_message'] = f"**当前趋势**: {trend_emoji} {trend_status}\n\n"
 
-    # 新逻辑：根据 'always_show_volume' 标志决定是否显示成交量
     if signal_info.get('always_show_volume', False):
-        message_data['vol_text'] = f"\n---\n{vol_text}"  # 总是显示，并用分隔线
+        message_data['vol_text'] = f"\n---\n{vol_text}"
     elif is_vol_over:
-        message_data['vol_text'] = f"\n---\n{vol_text}"  # 只在放量时显示
+        message_data['vol_text'] = f"\n---\n{vol_text}"
     else:
-        message_data['vol_text'] = ""  # 其他情况不显示
+        message_data['vol_text'] = ""
 
     message = signal_info['message_template'].format(**message_data)
 
@@ -89,8 +97,6 @@ def check_ema_signals(exchange, symbol, timeframe, config, df):
         bearish = (current['close'] < current[ema_col] - atr_buffer) and (prev['low'] > prev[ema_col])
         if bullish or bearish:
             action = "有效突破" if bullish else "有效跌破"
-            trend_status, trend_emoji = get_current_trend(df.copy(), timeframe, params)
-            trend_message = f"**当前趋势**: {trend_emoji} {trend_status}\n\n"
             breakout_distance = abs(current['close'] - current[ema_col]);
             breakout_atr_ratio = (breakout_distance / atr_val) if atr_val > 0 else float('inf')
             signal_info = {
@@ -106,7 +112,7 @@ def check_ema_signals(exchange, symbol, timeframe, config, df):
                                      "> **突破力度**: **{breakout_atr_ratio:.1f} 倍 ATR**\n"
                                      "> (突破阈值要求 > {atr_multiplier} 倍 ATR)\n\n"
                                      "{vol_text}"),
-                'template_data': {"trend_message": trend_message, "action": action, "period": ema_period,
+                'template_data': {"action": action, "period": ema_period,
                                   "current_close": current['close'], "ema_value": current[ema_col],
                                   "breakout_atr_ratio": breakout_atr_ratio, "atr_multiplier": atr_multiplier},
                 'cooldown_mult': 1
@@ -148,7 +154,6 @@ def check_kdj_cross(exchange, symbol, timeframe, config, df):
             elif death:
                 signal_type_desc = "震荡死叉 (下跌机会)"
         if not signal_type_desc: return
-        trend_message = f"**当前趋势**: {trend_emoji} {trend_status}\n\n"
         emoji_map = {"看涨": "📈", "看跌": "📉", "警示": "⚠️", "金叉": "📈", "死叉": "📉", "机会": "💡"};
         emoji = emoji_map.get(signal_type_desc.split(' ')[0].replace("顺势", "").replace("震荡", ""), "⚙️")
         signal_info = {
@@ -161,8 +166,8 @@ def check_kdj_cross(exchange, symbol, timeframe, config, df):
                                  "**当前K/D值**: {k_val:.2f} / {d_val:.2f}\n"
                                  "**当前价**: {price:.4f}\n\n"
                                  "{vol_text}"),
-            'template_data': {"trend_message": trend_message, "signal_type_desc": signal_type_desc,
-                              "k_val": current[k_col], "d_val": current[d_col], "price": current['close']},
+            'template_data': {"signal_type_desc": signal_type_desc, "k_val": current[k_col], "d_val": current[d_col],
+                              "price": current['close']},
             'cooldown_mult': 0.5
         }
         _prepare_and_send_notification(config, symbol, timeframe, df, signal_info)
@@ -187,13 +192,11 @@ def check_volatility_breakout(exchange, symbol, timeframe, config, df):
         reference_atr = prev[atr_col]
         is_volatility_breakout = current_volatility > reference_atr * dynamic_atr_multiplier
         if is_volatility_breakout:
-            trend_status, trend_emoji = get_current_trend(df.copy(), timeframe, params)
-            trend_message = f"**当前趋势**: {trend_emoji} {trend_status}\n\n"
             actual_atr_ratio = (current_volatility / reference_atr) if reference_atr > 0 else float('inf')
             signal_info = {
                 'log_name': 'Volatility Breakout',
                 'alert_key': f"{symbol}_{timeframe}_VOLATILITY_REALTIME",
-                'volume_must_confirm': vol_params.get('volume_confirm', False),
+                'volume_must_confirm': vol_params.get('volume_confirm', True),
                 'fallback_multiplier': vol_params.get('volume_multiplier', 2.0),
                 'title_template': f"💥 {{vol_label}}盘中波动异常: {symbol} ({timeframe})",
                 'message_template': ("{trend_message}"
@@ -202,7 +205,7 @@ def check_volatility_breakout(exchange, symbol, timeframe, config, df):
                                      "> **动态基准 (参考ATR)**: `{reference_atr:.4f}`\n"
                                      "> **波动阈值({dynamic_atr_multiplier:.1f}x)**: `{atr_threshold:.4f}`\n\n"
                                      "{vol_text}"),
-                'template_data': {"trend_message": trend_message, "current_volatility": current_volatility,
+                'template_data': {"current_volatility": current_volatility,
                                   "actual_atr_ratio": actual_atr_ratio, "reference_atr": reference_atr,
                                   "dynamic_atr_multiplier": dynamic_atr_multiplier,
                                   "atr_threshold": reference_atr * dynamic_atr_multiplier},
@@ -213,13 +216,15 @@ def check_volatility_breakout(exchange, symbol, timeframe, config, df):
         logger.error(f"❌ 在 {symbol} {timeframe} (波动率信号) 中出错: {e}", exc_info=True)
 
 
-def check_volume_breakout(exchange, symbol, timeframe, config, df):
+def check_level_breakout(exchange, symbol, timeframe, config, df):
     try:
         df.name = symbol
         params = config['strategy_params']
-        vol_br_params = params.get('volume_breakout', {})
+        vol_br_params = params.get('level_breakout', {})
         level_conf = vol_br_params.get('level_detection', {})
+
         if not level_conf.get('method') == 'advanced': return
+
         current_price = df.iloc[-1]['close']
         all_levels = []
         if level_conf.get('clustering', {}).get('enabled', False):
@@ -240,60 +245,69 @@ def check_volume_breakout(exchange, symbol, timeframe, config, df):
                     all_levels.extend(pivot_supports)
             except Exception as e:
                 logger.debug(f"为 {symbol} 获取枢轴点数据失败: {e}")
+
         resistances = sorted([lvl for lvl in all_levels if lvl['level'] > current_price], key=lambda x: x['level'])
         supports = sorted([lvl for lvl in all_levels if lvl['level'] < current_price], key=lambda x: x['level'],
                           reverse=True)
         if not resistances and not supports: return
+
         df.ta.atr(length=vol_br_params.get('atr_period', 14), append=True)
         df_cleaned = df.dropna().reset_index(drop=True)
         if len(df_cleaned) < 2: return
+
         current, prev = df_cleaned.iloc[-1], df_cleaned.iloc[-2]
         atr_val = current.get(f"ATRr_{vol_br_params.get('atr_period', 14)}", 0.0)
         if atr_val == 0: return
+
         atr_break_multiplier = vol_br_params.get('atr_multiplier_breakout', 0.1)
         atr_break_buffer = atr_val * atr_break_multiplier
-        trend_status, _ = get_current_trend(df.copy(), timeframe, params)
+
         if resistances:
             closest_res = resistances[0]
             is_breakout = current['close'] > closest_res['level'] + atr_break_buffer and prev['close'] < closest_res[
                 'level']
-            if is_breakout and ("多头" in trend_status or "震荡" in trend_status):
+            if is_breakout:
                 level_type_str = "+".join(sorted(list(set(closest_res.get('types', [closest_res.get('type')])))))
                 is_confluence = len(closest_res.get('types', [])) > 1
                 level_prefix = "🔥共振区域" if is_confluence else "水平位"
                 signal_info = {
                     'log_name': 'Volume Breakout',
                     'alert_key': f"{symbol}_{timeframe}_breakout_resistance_{closest_res['level']:.4f}",
-                    'volume_must_confirm': True,
+                    'volume_must_confirm': vol_br_params.get('volume_confirm', True),
                     'fallback_multiplier': vol_br_params.get('volume_multiplier', 1.5),
                     'title_template': f"🚨 {{vol_label}}突破关键阻力: {symbol} ({timeframe})",
-                    'message_template': (f"**信号**: **{{vol_label}}突破关键阻力**!\n\n"
+                    'message_template': ("{trend_message}**信号**: **突破关键阻力**!\n\n"
                                          f"**价格行为**: {level_prefix} ({level_type_str})\n"
                                          f"> **关键价位**: {closest_res['level']:.4f}\n"
                                          f"> **当前价格**: {current_price:.4f}\n\n"
-                                         "{{vol_text}}"),
-                    'template_data': {}, 'cooldown_mult': 1}
+                                         "{vol_text}"),
+                    'template_data': {},
+                    'cooldown_mult': 1
+                }
                 _prepare_and_send_notification(config, symbol, timeframe, df, signal_info)
+
         if supports:
             closest_sup = supports[0]
             is_breakdown = current['close'] < closest_sup['level'] - atr_break_buffer and prev['close'] > closest_sup[
                 'level']
-            if is_breakdown and ("空头" in trend_status or "震荡" in trend_status):
+            if is_breakdown:
                 level_type_str = "+".join(sorted(list(set(closest_sup.get('types', [closest_sup.get('type')])))))
                 is_confluence = len(closest_sup.get('types', [])) > 1
                 level_prefix = "🔥共振区域" if is_confluence else "水平位"
                 signal_info = {
                     'log_name': 'Volume Breakdown',
                     'alert_key': f"{symbol}_{timeframe}_breakout_support_{closest_sup['level']:.4f}",
-                    'volume_must_confirm': True,
+                    'volume_must_confirm': vol_br_params.get('volume_confirm', True),
                     'fallback_multiplier': vol_br_params.get('volume_multiplier', 1.5),
                     'title_template': f"📉 {{vol_label}}跌破关键支撑: {symbol} ({timeframe})",
-                    'message_template': (f"**信号**: **{{vol_label}}跌破关键支撑**!\n\n"
+                    'message_template': ("{trend_message}**信号**: **跌破关键支撑**!\n\n"
                                          f"**价格行为**: {level_prefix} ({level_type_str})\n"
                                          f"> **关键价位**: {closest_sup['level']:.4f}\n"
                                          f"> **当前价格**: {current_price:.4f}\n\n"
-                                         "{{vol_text}}"),
-                    'template_data': {}, 'cooldown_mult': 1}
+                                         "{vol_text}"),
+                    'template_data': {},
+                    'cooldown_mult': 1
+                }
                 _prepare_and_send_notification(config, symbol, timeframe, df, signal_info)
     except Exception as e:
         logger.error(f"❌ 在 {symbol} {timeframe} (高级量价突破) 中出错: {e}", exc_info=True)
@@ -305,8 +319,6 @@ def check_rsi_divergence(exchange, symbol, timeframe, config, df):
         cooldown_minutes = timeframe_to_minutes(timeframe) * 2
         params = config['strategy_params'];
         rsi_params = params.get('rsi_divergence', {})
-        trend_status, trend_emoji = get_current_trend(df.copy(), timeframe, params);
-        trend_message = f"**当前趋势**: {trend_emoji} {trend_status}\n\n"
         indicator_result = pta.rsi(df['close'], length=rsi_params.get('rsi_period', 14))
         if indicator_result is None or indicator_result.empty: return
         if isinstance(indicator_result, pd.DataFrame):
@@ -318,22 +330,32 @@ def check_rsi_divergence(exchange, symbol, timeframe, config, df):
         lookback = rsi_params.get('lookback_period', 60)
         if len(df_cleaned) < lookback + 1: return
         recent_df, current = df_cleaned.iloc[-lookback - 1:-1], df_cleaned.iloc[-1]
+
+        # 使用 _prepare_and_send_notification 统一发送
         if current['close'] > recent_df['close'].max() and current['rsi'] < recent_df['rsi'].max():
-            alert_key = f"{symbol}_{timeframe}_DIV_TOP_REALTIME"
-            if not (alerted_states.get(alert_key) and now_utc < alerted_states[alert_key]):
-                title = f"🚩 实时RSI顶背离风险: {symbol} ({timeframe})";
-                message = trend_message + "**信号**: 价格创近期新高，但RSI指标出现衰弱迹象（潜在反转/回调风险）。"
-                send_alert(config, title, message, symbol);
-                alerted_states[alert_key] = calculate_cooldown_time(cooldown_minutes);
-                save_alert_states()
+            signal_info = {
+                'log_name': 'RSI Top Divergence',
+                'alert_key': f"{symbol}_{timeframe}_DIV_TOP_REALTIME",
+                'volume_must_confirm': False,  # 背离通常不强制要求成交量
+                'title_template': f"🚩 RSI顶背离风险: {symbol} ({timeframe})",
+                'message_template': "{trend_message}**信号**: 价格创近期新高，但RSI指标出现衰弱迹象（潜在反转/回调风险）。",
+                'template_data': {},
+                'cooldown_mult': 2
+            }
+            _prepare_and_send_notification(config, symbol, timeframe, df, signal_info)
+
         if current['close'] < recent_df['close'].min() and current['rsi'] > recent_df['rsi'].min():
-            alert_key = f"{symbol}_{timeframe}_DIV_BOTTOM_REALTIME"
-            if not (alerted_states.get(alert_key) and now_utc < alerted_states[alert_key]):
-                title = f"⛳️ 实时RSI底背离机会: {symbol} ({timeframe})";
-                message = trend_message + "**信号**: 价格创近期新低，但RSI指标出现企稳迹象（潜在反转/反弹机会）。"
-                send_alert(config, title, message, symbol);
-                alerted_states[alert_key] = calculate_cooldown_time(cooldown_minutes);
-                save_alert_states()
+            signal_info = {
+                'log_name': 'RSI Bottom Divergence',
+                'alert_key': f"{symbol}_{timeframe}_DIV_BOTTOM_REALTIME",
+                'volume_must_confirm': False,
+                'title_template': f"⛳️ RSI底背离机会: {symbol} ({timeframe})",
+                'message_template': "{trend_message}**信号**: 价格创近期新低，但RSI指标出现企稳迹象（潜在反转/反弹机会）。",
+                'template_data': {},
+                'cooldown_mult': 2
+            }
+            _prepare_and_send_notification(config, symbol, timeframe, df, signal_info)
+
     except Exception as e:
         logger.error(f"❌ 在 {symbol} {timeframe} (RSI背离) 中出错: {e}", exc_info=True)
 
@@ -368,7 +390,6 @@ def check_consecutive_candles(exchange, symbol, timeframe, config, df):
         is_prev_up = prev_candle['close'] > prev_candle['open']
         is_prev_down = prev_candle['close'] < prev_candle['open']
 
-        # 检查反转
         if is_last_up and is_prev_down:
             prev_down_trend_count = count_backwards(len(df) - 3, 'down')
             if prev_down_trend_count >= min_n_to_alert:
@@ -377,12 +398,12 @@ def check_consecutive_candles(exchange, symbol, timeframe, config, df):
                     'alert_key': alert_key,
                     'title_template': f"🔄 趋势反转: {symbol} ({timeframe})",
                     'message_template': ("{trend_message}**信号**: **下跌趋势终结**!\n\n"
-                                       f"> 连续下跌 **{prev_down_trend_count}** 根K线后，出现首根上涨K线。\n"
-                                       f"> **当前价**: {last_candle['close']:.4f}"
-                                       "{vol_text}"),
+                                         f"> 连续下跌 **{prev_down_trend_count}** 根K线后，出现首根上涨K线。\n"
+                                         f"> **当前价**: {last_candle['close']:.4f}"
+                                         "{vol_text}"),
                     'template_data': {},
                     'cooldown_logic': 'align_to_period_end',
-                    'always_show_volume': True # 强制显示成交量
+                    'always_show_volume': True
                 }
                 _prepare_and_send_notification(config, symbol, timeframe, df, signal_info)
 
@@ -394,16 +415,15 @@ def check_consecutive_candles(exchange, symbol, timeframe, config, df):
                     'alert_key': alert_key,
                     'title_template': f"🔄 趋势反转: {symbol} ({timeframe})",
                     'message_template': ("{trend_message}**信号**: **上涨趋势终结**!\n\n"
-                                       f"> 连续上涨 **{prev_up_trend_count}** 根K线后，出现首根下跌K线。\n"
-                                       f"> **当前价**: {last_candle['close']:.4f}"
-                                       "{vol_text}"),
+                                         f"> 连续上涨 **{prev_up_trend_count}** 根K线后，出现首根下跌K线。\n"
+                                         f"> **当前价**: {last_candle['close']:.4f}"
+                                         "{vol_text}"),
                     'template_data': {},
                     'cooldown_logic': 'align_to_period_end',
-                    'always_show_volume': True # 强制显示成交量
+                    'always_show_volume': True
                 }
                 _prepare_and_send_notification(config, symbol, timeframe, df, signal_info)
 
-        # 检查持续
         current_trend_count = 0
         current_direction = None
         if is_last_up:
@@ -421,15 +441,16 @@ def check_consecutive_candles(exchange, symbol, timeframe, config, df):
                 'alert_key': alert_key,
                 'title_template': f"{emoji} 趋势持续: {{vol_label}}{symbol} ({timeframe})",
                 'message_template': ("{trend_message}**信号**: 价格已连续 **{current_trend_count}** 个周期{direction_text}。\n\n"
-                                   f"> **当前价**: {last_candle['close']:.4f}"
-                                   "{vol_text}"),
+                                     f"> **当前价**: {last_candle['close']:.4f}"
+                                     "{vol_text}"),
                 'template_data': {'current_trend_count': current_trend_count, 'direction_text': direction_text},
                 'cooldown_logic': 'align_to_period_end',
                 'fallback_multiplier': consecutive_params.get('volume_multiplier', 1.5),
                 'volume_must_confirm': consecutive_params.get('volume_confirm', False),
-                'always_show_volume': True # 强制显示成交量
+                'always_show_volume': True
             }
             _prepare_and_send_notification(config, symbol, timeframe, df, signal_info)
 
     except Exception as e:
         logger.error(f"❌ 在 {symbol} {timeframe} (无状态连续K线信号) 中出错: {e}", exc_info=True)
+

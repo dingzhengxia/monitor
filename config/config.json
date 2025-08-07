@@ -23,7 +23,7 @@
       "top_n_for_signals": 100,
       "primary_quote_currency": "USDT",
       "cross_market_filter": {
-        "enabled": false,
+        "enabled": true,
         "must_exist_in": [
           "USDC"
         ]
@@ -91,18 +91,22 @@
       "slow_d": 3,
       "volume_confirm": true,
       "volume_multiplier": 2,
-      "exclude_timeframes": ["1d"]
+      "exclude_timeframes": [
+        "1d"
+      ]
     },
     "volatility_breakout": {
-      "enabled": true,
+      "enabled": false,
       "atr_period": 14,
       "atr_multiplier": 2.5,
       "volume_confirm": true,
       "volume_multiplier": 2.0,
       "exclude_timeframes": []
     },
-    "volume_breakout": {
+    "level_breakout": {
       "enabled": true,
+      "volume_confirm": true,
+      "volume_multiplier": 1.5,
       "level_detection": {
         "method": "advanced",
         "clustering": {
@@ -142,18 +146,33 @@
       "min_consecutive_candles": 4,
       "volume_confirm": false,
       "volume_multiplier": 1.5,
-      "exclude_timeframes": ["15m"]
+      "exclude_timeframes": [
+        "15m"
+      ]
     }
   },
-  "periodic_report": {
-    "enabled": true,
-    "run_interval": "4h",
-    "top_n_by_volume": 300,
-    "top_n_gainers": 10,
-    "min_consecutive_candles": 2,
-    "volume_ma_period": 20,
-    "top_n_volume_ratio": 10
-  },
+  "periodic_reports": [
+    {
+      "enabled": true,
+      "report_name": "4小时热点报告",
+      "run_interval": "4h",
+      "top_n_by_volume": 300,
+      "top_n_gainers": 10,
+      "min_consecutive_candles": 3,
+      "volume_ma_period": 20,
+      "top_n_volume_ratio": 10
+    },
+    {
+      "enabled": true,
+      "report_name": "每日宏观复盘",
+      "run_interval": "1d",
+      "top_n_by_volume": 300,
+      "top_n_gainers": 10,
+      "min_consecutive_candles": 2,
+      "volume_ma_period": 20,
+      "top_n_volume_ratio": 10
+    }
+  ],
   "notification_settings": {
     "dingtalk": {
       "enabled": true,
