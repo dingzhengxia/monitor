@@ -1,5 +1,7 @@
-# --- START OF FILE app/analysis/levels.py (ULTIMATE FIX V50.1 - FULL CODE) ---
 import pandas as pd
+import pandas_ta as pta  # 确保导入 pandas_ta
+from sklearn.cluster import DBSCAN
+import numpy as np
 
 
 def calculate_pivot_points(daily_ohlc):
@@ -18,10 +20,11 @@ def calculate_pivot_points(daily_ohlc):
     return resistances, supports
 
 
-# 【V50.1 最终修复版】: 集成最小间距过滤
+# 【最终优化版算法】
 def find_price_interest_zones(df, atr_grouping_multiplier=0.5, min_cluster_size=2, min_separation_atr_mult=1.0):
     """
-    通过对所有分形拐点进行统一聚类，并应用最小间距过滤，识别出重要的价格兴趣区。
+    通过对所有分形拐点进行DBSCAN聚类，识别出重要的价格兴趣区。
+    这个算法是一体化的，能更好地处理区域的识别和分离。
     """
     zones = []
     period = 2
@@ -29,50 +32,47 @@ def find_price_interest_zones(df, atr_grouping_multiplier=0.5, min_cluster_size=
     is_fractal_high = df['high'].rolling(window=2 * period + 1, center=True).max() == df['high']
     is_fractal_low = df['low'].rolling(window=2 * period + 1, center=True).min() == df['low']
 
-    fractal_highs_df = df[is_fractal_high][['high']].rename(columns={'high': 'price'})
-    fractal_lows_df = df[is_fractal_low][['low']].rename(columns={'low': 'price'})
+    fractal_highs_prices = df[is_fractal_high]['high'].dropna().values
+    fractal_lows_prices = df[is_fractal_low]['low'].dropna().values
 
-    all_fractals = pd.concat([fractal_highs_df, fractal_lows_df]).sort_values(by='price', ascending=False)
-    if all_fractals.empty: return []
+    all_fractals = np.concatenate([fractal_highs_prices, fractal_lows_prices]).reshape(-1, 1)
+    if all_fractals.shape[0] < min_cluster_size:
+        return []
 
+    # 使用 pandas_ta 计算 ATR
     atr_period = 14
     df.ta.atr(length=atr_period, append=True)
     avg_atr = df[f"ATRr_{atr_period}"].dropna().mean()
-    if pd.isna(avg_atr) or avg_atr == 0: return []
+    if pd.isna(avg_atr) or avg_atr == 0:
+        return []
 
-    cluster_radius = avg_atr * atr_grouping_multiplier
-    min_separation = avg_atr * min_separation_atr_mult
+    # DBSCAN 的 eps (邻域半径) 由 ATR 动态决定
+    # 这同时解决了“聚类”和“分离”的问题
+    eps = avg_atr * atr_grouping_multiplier
 
-    # 聚类
-    clusters = []
-    while not all_fractals.empty:
-        seed_price = all_fractals.iloc[0]['price']
-        cluster_points = all_fractals[abs(all_fractals['price'] - seed_price) <= cluster_radius]
-        if len(cluster_points) >= min_cluster_size:
-            cluster_level = cluster_points['price'].mean()
-            cluster_strength = len(cluster_points)
-            clusters.append({'level': cluster_level, 'strength': cluster_strength})
-        all_fractals = all_fractals.drop(cluster_points.index)
+    # min_samples 对应我们的 min_cluster_size
+    db = DBSCAN(eps=eps, min_samples=min_cluster_size).fit(all_fractals)
 
-    # 最小间距过滤
-    if len(clusters) < 2:
-        return [{'level': c['level'], 'type': f'Zone ({c["strength"]} touches)'} for c in clusters]
+    labels = db.labels_
+    unique_labels = set(labels)
 
-    clusters.sort(key=lambda x: x['level'])
+    for k in unique_labels:
+        # -1 标签代表噪声点，我们忽略它
+        if k == -1:
+            continue
 
-    final_clusters = [clusters[0]]
-    for i in range(1, len(clusters)):
-        current_level = clusters[i]['level']
-        last_final_level = final_clusters[-1]['level']
+        class_member_mask = (labels == k)
+        cluster_points = all_fractals[class_member_mask]
 
-        if abs(current_level - last_final_level) < min_separation:
-            if clusters[i]['strength'] > final_clusters[-1]['strength']:
-                final_clusters[-1] = clusters[i]
-        else:
-            final_clusters.append(clusters[i])
+        # 计算区域的中心价位和强度
+        zone_level = np.mean(cluster_points)
+        strength = len(cluster_points)
 
-    for cluster in final_clusters:
-        zones.append({'level': cluster['level'], 'type': f'Zone ({cluster["strength"]} touches)'})
+        zones.append({
+            'level': zone_level,
+            'type': f'Zone ({strength} touches)'
+        })
 
+    # 按价格排序
+    zones.sort(key=lambda x: x['level'], reverse=True)
     return zones
-# --- END OF FILE app/analysis/levels.py (ULTIMATE FIX V50.1 - FULL CODE) ---

@@ -108,8 +108,8 @@
         "clustering": {
           "enabled": true,
           "atr_grouping_multiplier": 0.5,
-          "min_cluster_size": 2,
-          "min_separation_atr_mult": 1.0
+          "min_cluster_size": 1,
+          "min_separation_atr_mult": 0.6
         },
         "pivots": {
           "enabled": true
