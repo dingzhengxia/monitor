@@ -114,7 +114,7 @@
     "level_breakout": {
       "enabled": true,
       "volume_confirm": true,
-      "exempt_static_on_volume": true,
+      "exempt_static_on_volume": false,
       "volume_multiplier": 1.5,
       "level_detection": {
         "method": "advanced",
