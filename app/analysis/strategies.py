@@ -222,12 +222,11 @@ def check_level_breakout(exchange, symbol, timeframe, config, df):
         level_conf = breakout_params.get('level_detection', {})
 
         if not level_conf.get('method') == 'advanced':
-            logger.debug(f"[{symbol}|{timeframe}] 策略未配置为 'advanced' 方法，跳过。")
             return
 
         df.ta.atr(length=breakout_params.get('atr_period', 14), append=True)
         df_cleaned = df.dropna().reset_index(drop=True)
-        if len(df_cleaned) < 3:  # 需要至少 prev 和 current 两根K线
+        if len(df_cleaned) < 3:
             return
 
         current = df_cleaned.iloc[-1]
@@ -235,17 +234,18 @@ def check_level_breakout(exchange, symbol, timeframe, config, df):
 
         all_levels = []
 
-        # 1. 关键位识别 (聚类和枢轴点)
+        # 1. 聚类找点
         if level_conf.get('clustering', {}).get('enabled', False):
             cluster_conf = level_conf['clustering']
             atr_group_mult = cluster_conf.get('atr_grouping_multiplier', 0.5)
             min_size = cluster_conf.get('min_cluster_size', 2)
-            min_sep = cluster_conf.get('min_separation_atr_mult', 1.0)
+            min_sep = cluster_conf.get('min_separation_atr_mult', 0.6)
             price_zones = find_price_interest_zones(df.copy(), atr_group_mult, min_size, min_sep)
             all_levels.extend(price_zones)
             logger.debug(f"[{symbol}|{timeframe}] 聚类分析完成，找到 {len(price_zones)} 个价格区域。")
 
-        if level_conf.get('pivots', {}).get('enabled', False):
+        # 2. 静态枢轴点 (基于日线)
+        if level_conf.get('static_pivots', {}).get('enabled', False):
             try:
                 daily_ohlcv_list = exchange.fetch_ohlcv(symbol, '1d', limit=2)
                 if len(daily_ohlcv_list) >= 2:
@@ -255,17 +255,30 @@ def check_level_breakout(exchange, symbol, timeframe, config, df):
                     all_levels.extend(pivot_resistances)
                     all_levels.extend(pivot_supports)
                     logger.debug(
-                        f"[{symbol}|{timeframe}] 枢轴点分析完成，找到 {len(pivot_resistances)} 个阻力位和 {len(pivot_supports)} 个支撑位。")
-                else:
-                    logger.debug(f"[{symbol}|{timeframe}] 获取日线数据不足，无法计算枢轴点。")
+                        f"[{symbol}|{timeframe}] 静态枢轴点分析完成，找到 {len(pivot_resistances) + len(pivot_supports)} 个关键位。")
             except Exception as e:
-                logger.debug(f"[{symbol}|{timeframe}] 获取枢轴点数据失败: {e}")
+                logger.debug(f"[{symbol}|{timeframe}] 获取静态枢轴点数据失败: {e}")
+
+        # 3. 滚动枢轴点 (基于当前周期)
+        if level_conf.get('rolling_pivots', {}).get('enabled', False):
+            # 【核心修改】复用 breakout_period 参数
+            period = breakout_params.get('breakout_period', 120)
+            if len(df_cleaned) > period:
+                lookback_df = df_cleaned.iloc[-period - 2:-2]
+
+                highest_high = lookback_df['high'].max()
+                lowest_low = lookback_df['low'].min()
+
+                all_levels.append({'level': highest_high, 'type': f'Rolling High({period})'})
+                all_levels.append({'level': lowest_low, 'type': f'Rolling Low({period})'})
+                logger.debug(
+                    f"[{symbol}|{timeframe}] 滚动枢轴点分析完成 (周期 {period})，找到高点: {highest_high:.4f}, 低点: {lowest_low:.4f}。")
 
         if not all_levels:
             logger.debug(f"[{symbol}|{timeframe}] 未找到任何关键位，策略结束。")
             return
 
-        # 【核心修正】基于 prev K线的收盘价来确定要检查的支撑和阻力
+        # 基于 prev K线的收盘价来确定要检查的支撑和阻力
         prev_price = prev['close']
         resistances = sorted([lvl for lvl in all_levels if lvl['level'] > prev_price], key=lambda x: x['level'])
         supports = sorted([lvl for lvl in all_levels if lvl['level'] < prev_price], key=lambda x: x['level'],
@@ -279,17 +292,14 @@ def check_level_breakout(exchange, symbol, timeframe, config, df):
         atr_break_multiplier = breakout_params.get('atr_multiplier_breakout', 0.1)
         atr_break_buffer = atr_val * atr_break_multiplier
 
-        # 2. 检查阻力位突破
+        # 检查阻力位突破
         if resistances:
             closest_res = resistances[0]
             logger.debug(
                 f"[{symbol}|{timeframe}] 检查最近的阻力位: {closest_res['level']:.4f} (类型: {closest_res.get('type', 'N/A')})")
 
-            # 条件1：前一根K线的收盘价必须低于该阻力位 (这是我们筛选的前提)
             cond1 = prev['close'] < closest_res['level']
-            # 条件2：当前K线的收盘价必须高于该阻力位 + 缓冲
             cond2 = current['close'] > closest_res['level'] + atr_break_buffer
-
             is_breakout = cond1 and cond2
 
             logger.debug(
@@ -318,7 +328,7 @@ def check_level_breakout(exchange, symbol, timeframe, config, df):
                 }
                 _prepare_and_send_notification(config, symbol, timeframe, df, signal_info)
 
-        # 3. 检查支撑位跌破
+        # 检查支撑位跌破
         if supports:
             closest_sup = supports[0]
             logger.debug(
@@ -326,7 +336,6 @@ def check_level_breakout(exchange, symbol, timeframe, config, df):
 
             cond1 = prev['close'] > closest_sup['level']
             cond2 = current['close'] < closest_sup['level'] - atr_break_buffer
-
             is_breakdown = cond1 and cond2
 
             logger.debug(

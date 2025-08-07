@@ -8,7 +8,6 @@
   },
   "market_settings": {
     "timeframes": [
-      "15m",
       "1h",
       "4h",
       "1d"
@@ -61,7 +60,7 @@
       "min_multiplier": 1.5,
       "max_multiplier": 5.0,
       "apply_to_rank_n": 100,
-      "rank_step_size": 10
+      "rank_step_size": 3
     },
     "dynamic_atr_multipliers": {
       "enabled": false,
@@ -69,7 +68,7 @@
       "min_multiplier": 1.5,
       "max_multiplier": 5.0,
       "apply_to_rank_n": 100,
-      "rank_step_size": 20
+      "rank_step_size": 3
     },
     "trend_ema_short": {
       "fast": 12,
@@ -85,6 +84,7 @@
       "enabled": true,
       "period": 120,
       "volume_confirm": true,
+      "exempt_static_on_volume": true,
       "volume_multiplier": 2,
       "atr_period": 14,
       "atr_multiplier": 1,
@@ -96,6 +96,7 @@
       "slow_k": 3,
       "slow_d": 3,
       "volume_confirm": true,
+      "exempt_static_on_volume": false,
       "volume_multiplier": 2,
       "exclude_timeframes": [
         "1d"
@@ -106,25 +107,29 @@
       "atr_period": 14,
       "atr_multiplier": 2.5,
       "volume_confirm": true,
+      "exempt_static_on_volume": false,
       "volume_multiplier": 2.0,
       "exclude_timeframes": []
     },
     "level_breakout": {
       "enabled": true,
       "volume_confirm": true,
+      "exempt_static_on_volume": true,
       "volume_multiplier": 1.5,
       "level_detection": {
         "method": "advanced",
         "clustering": {
           "enabled": true,
-          "atr_grouping_multiplier": 1,
-          "min_cluster_size": 3,
-          "min_separation_atr_mult": 1.1
+          "atr_grouping_multiplier": 0.5,
+          "min_cluster_size": 2,
+          "min_separation_atr_mult": 0.6
         },
-        "pivots": {
+        "static_pivots": {
           "enabled": true
         },
-        "confluence_pct": 0.2
+        "rolling_pivots": {
+          "enabled": true
+        }
       },
       "breakout_period": 120,
       "volume_ma_period": 20,
@@ -151,6 +156,7 @@
       },
       "min_consecutive_candles": 4,
       "volume_confirm": false,
+      "exempt_static_on_volume": true,
       "volume_multiplier": 1.5,
       "exclude_timeframes": [
         "15m"
