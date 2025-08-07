@@ -216,15 +216,26 @@ def check_volatility_breakout(exchange, symbol, timeframe, config, df):
 
 def check_level_breakout(exchange, symbol, timeframe, config, df):
     try:
-        df.name = symbol
+        logger.debug(f"[{symbol}|{timeframe}] --- 开始 Level Breakout 策略检查 ---")
         params = config['strategy_params']
         breakout_params = params.get('level_breakout', {})
         level_conf = breakout_params.get('level_detection', {})
 
-        if not level_conf.get('method') == 'advanced': return
+        if not level_conf.get('method') == 'advanced':
+            logger.debug(f"[{symbol}|{timeframe}] 策略未配置为 'advanced' 方法，跳过。")
+            return
 
-        current_price = df.iloc[-1]['close']
+        df.ta.atr(length=breakout_params.get('atr_period', 14), append=True)
+        df_cleaned = df.dropna().reset_index(drop=True)
+        if len(df_cleaned) < 3:  # 需要至少 prev 和 current 两根K线
+            return
+
+        current = df_cleaned.iloc[-1]
+        prev = df_cleaned.iloc[-2]
+
         all_levels = []
+
+        # 1. 关键位识别 (聚类和枢轴点)
         if level_conf.get('clustering', {}).get('enabled', False):
             cluster_conf = level_conf['clustering']
             atr_group_mult = cluster_conf.get('atr_grouping_multiplier', 0.5)
@@ -232,6 +243,8 @@ def check_level_breakout(exchange, symbol, timeframe, config, df):
             min_sep = cluster_conf.get('min_separation_atr_mult', 1.0)
             price_zones = find_price_interest_zones(df.copy(), atr_group_mult, min_size, min_sep)
             all_levels.extend(price_zones)
+            logger.debug(f"[{symbol}|{timeframe}] 聚类分析完成，找到 {len(price_zones)} 个价格区域。")
+
         if level_conf.get('pivots', {}).get('enabled', False):
             try:
                 daily_ohlcv_list = exchange.fetch_ohlcv(symbol, '1d', limit=2)
@@ -241,72 +254,107 @@ def check_level_breakout(exchange, symbol, timeframe, config, df):
                     pivot_resistances, pivot_supports = calculate_pivot_points(prev_day_ohlc)
                     all_levels.extend(pivot_resistances)
                     all_levels.extend(pivot_supports)
+                    logger.debug(
+                        f"[{symbol}|{timeframe}] 枢轴点分析完成，找到 {len(pivot_resistances)} 个阻力位和 {len(pivot_supports)} 个支撑位。")
+                else:
+                    logger.debug(f"[{symbol}|{timeframe}] 获取日线数据不足，无法计算枢轴点。")
             except Exception as e:
-                logger.debug(f"为 {symbol} 获取枢轴点数据失败: {e}")
+                logger.debug(f"[{symbol}|{timeframe}] 获取枢轴点数据失败: {e}")
 
-        resistances = sorted([lvl for lvl in all_levels if lvl['level'] > current_price], key=lambda x: x['level'])
-        supports = sorted([lvl for lvl in all_levels if lvl['level'] < current_price], key=lambda x: x['level'],
+        if not all_levels:
+            logger.debug(f"[{symbol}|{timeframe}] 未找到任何关键位，策略结束。")
+            return
+
+        # 【核心修正】基于 prev K线的收盘价来确定要检查的支撑和阻力
+        prev_price = prev['close']
+        resistances = sorted([lvl for lvl in all_levels if lvl['level'] > prev_price], key=lambda x: x['level'])
+        supports = sorted([lvl for lvl in all_levels if lvl['level'] < prev_price], key=lambda x: x['level'],
                           reverse=True)
-        if not resistances and not supports: return
+        logger.debug(
+            f"[{symbol}|{timeframe}] 基于前一根K线价格({prev_price:.4f})，分离出 {len(resistances)} 个潜在阻力位和 {len(supports)} 个潜在支撑位。")
 
-        df.ta.atr(length=breakout_params.get('atr_period', 14), append=True)
-        df_cleaned = df.dropna().reset_index(drop=True)
-        if len(df_cleaned) < 2: return
-
-        current, prev = df_cleaned.iloc[-1], df_cleaned.iloc[-2]
+        # 准备突破检查所需的参数
         atr_val = current.get(f"ATRr_{breakout_params.get('atr_period', 14)}", 0.0)
         if atr_val == 0: return
-
         atr_break_multiplier = breakout_params.get('atr_multiplier_breakout', 0.1)
         atr_break_buffer = atr_val * atr_break_multiplier
 
+        # 2. 检查阻力位突破
         if resistances:
             closest_res = resistances[0]
-            is_breakout = current['close'] > closest_res['level'] + atr_break_buffer and prev['close'] < closest_res[
-                'level']
+            logger.debug(
+                f"[{symbol}|{timeframe}] 检查最近的阻力位: {closest_res['level']:.4f} (类型: {closest_res.get('type', 'N/A')})")
+
+            # 条件1：前一根K线的收盘价必须低于该阻力位 (这是我们筛选的前提)
+            cond1 = prev['close'] < closest_res['level']
+            # 条件2：当前K线的收盘价必须高于该阻力位 + 缓冲
+            cond2 = current['close'] > closest_res['level'] + atr_break_buffer
+
+            is_breakout = cond1 and cond2
+
+            logger.debug(
+                f"[{symbol}|{timeframe}] 突破条件检查: prev_close({prev['close']:.4f}) < level({closest_res['level']:.4f})? -> {cond1}")
+            logger.debug(
+                f"[{symbol}|{timeframe}] 突破条件检查: current_close({current['close']:.4f}) > level+buffer({closest_res['level'] + atr_break_buffer:.4f})? -> {cond2}")
+
             if is_breakout:
+                logger.info(f"[{symbol}|{timeframe}] ✅ 检测到阻力位突破！准备发送通知...")
                 level_type_str = "+".join(sorted(list(set(closest_res.get('types', [closest_res.get('type')])))))
                 is_confluence = len(closest_res.get('types', [])) > 1
                 level_prefix = "🔥共振区域" if is_confluence else "水平位"
                 signal_info = {
                     'log_name': 'Level Breakout',
-                    'alert_key': f"{symbol}_{timeframe}_breakout_resistance_{closest_res['level']:.4f}",
+                    'alert_key': f"{symbol}_{timeframe}_breakout_resistance_{closest_res['level']:.4f}_{current['timestamp']}",
                     'volume_must_confirm': breakout_params.get('volume_confirm', True),
                     'fallback_multiplier': breakout_params.get('volume_multiplier', 1.5),
                     'title_template': f"🚨 {{vol_label}}突破关键阻力: {symbol} ({timeframe})",
                     'message_template': ("{trend_message}**信号**: **突破关键阻力**!\n\n"
                                          f"**价格行为**: {level_prefix} ({level_type_str})\n"
                                          f"> **关键价位**: {closest_res['level']:.4f}\n"
-                                         f"> **当前价格**: {current_price:.4f}\n\n"
+                                         f"> **突破价格**: {current['close']:.4f}\n\n"
                                          "{vol_text}"),
                     'template_data': {},
                     'cooldown_mult': 1
                 }
                 _prepare_and_send_notification(config, symbol, timeframe, df, signal_info)
 
+        # 3. 检查支撑位跌破
         if supports:
             closest_sup = supports[0]
-            is_breakdown = current['close'] < closest_sup['level'] - atr_break_buffer and prev['close'] > closest_sup[
-                'level']
+            logger.debug(
+                f"[{symbol}|{timeframe}] 检查最近的支撑位: {closest_sup['level']:.4f} (类型: {closest_sup.get('type', 'N/A')})")
+
+            cond1 = prev['close'] > closest_sup['level']
+            cond2 = current['close'] < closest_sup['level'] - atr_break_buffer
+
+            is_breakdown = cond1 and cond2
+
+            logger.debug(
+                f"[{symbol}|{timeframe}] 跌破条件检查: prev_close({prev['close']:.4f}) > level({closest_sup['level']:.4f})? -> {cond1}")
+            logger.debug(
+                f"[{symbol}|{timeframe}] 跌破条件检查: current_close({current['close']:.4f}) < level-buffer({closest_sup['level'] - atr_break_buffer:.4f})? -> {cond2}")
+
             if is_breakdown:
+                logger.info(f"[{symbol}|{timeframe}] ✅ 检测到支撑位跌破！准备发送通知...")
                 level_type_str = "+".join(sorted(list(set(closest_sup.get('types', [closest_sup.get('type')])))))
                 is_confluence = len(closest_sup.get('types', [])) > 1
                 level_prefix = "🔥共振区域" if is_confluence else "水平位"
                 signal_info = {
                     'log_name': 'Level Breakdown',
-                    'alert_key': f"{symbol}_{timeframe}_breakout_support_{closest_sup['level']:.4f}",
+                    'alert_key': f"{symbol}_{timeframe}_breakout_support_{closest_sup['level']:.4f}_{current['timestamp']}",
                     'volume_must_confirm': breakout_params.get('volume_confirm', True),
                     'fallback_multiplier': breakout_params.get('volume_multiplier', 1.5),
                     'title_template': f"📉 {{vol_label}}跌破关键支撑: {symbol} ({timeframe})",
                     'message_template': ("{trend_message}**信号**: **跌破关键支撑**!\n\n"
                                          f"**价格行为**: {level_prefix} ({level_type_str})\n"
                                          f"> **关键价位**: {closest_sup['level']:.4f}\n"
-                                         f"> **当前价格**: {current_price:.4f}\n\n"
+                                         f"> **跌破价格**: {current['close']:.4f}\n\n"
                                          "{vol_text}"),
                     'template_data': {},
                     'cooldown_mult': 1
                 }
                 _prepare_and_send_notification(config, symbol, timeframe, df, signal_info)
+
     except Exception as e:
         logger.error(f"❌ 在 {symbol} {timeframe} (关键位突破) 中出错: {e}", exc_info=True)
 

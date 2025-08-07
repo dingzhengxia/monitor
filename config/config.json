@@ -59,7 +59,7 @@
       "enabled": true,
       "method": "linear_stepped",
       "min_multiplier": 1.5,
-      "max_multiplier": 10.0,
+      "max_multiplier": 5.0,
       "apply_to_rank_n": 100,
       "rank_step_size": 10
     },
