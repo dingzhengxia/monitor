@@ -82,7 +82,7 @@
       "volume_multiplier": 2,
       "atr_period": 14,
       "atr_multiplier": 1,
-      "exclude_timeframes": ["15m"]
+      "exclude_timeframes": []
     },
     "kdj_cross": {
       "enabled": true,
@@ -91,7 +91,7 @@
       "slow_d": 3,
       "volume_confirm": true,
       "volume_multiplier": 2,
-      "exclude_timeframes": ["15m"]
+      "exclude_timeframes": ["1d"]
     },
     "volatility_breakout": {
       "enabled": false,
@@ -108,7 +108,7 @@
         "clustering": {
           "enabled": true,
           "atr_grouping_multiplier": 0.5,
-          "min_cluster_size": 1,
+          "min_cluster_size": 2,
           "min_separation_atr_mult": 0.6
         },
         "pivots": {
@@ -120,7 +120,7 @@
       "volume_ma_period": 20,
       "atr_period": 14,
       "atr_multiplier_breakout": 0.1,
-      "exclude_timeframes": ["15m"]
+      "exclude_timeframes": []
     },
     "rsi_divergence": {
       "enabled": false,
@@ -133,8 +133,8 @@
       "dynamic_count": {
         "enabled": true,
         "method": "linear_stepped",
-        "min_count": 6,
-        "max_count": 10,
+        "min_count": 4,
+        "max_count": 8,
         "apply_to_rank_n": 100,
         "rank_step_size": 10,
         "default_count": 9
@@ -145,12 +145,13 @@
       "exclude_timeframes": ["15m"]
     }
   },
-  "daily_report": {
+  "periodic_report": {
     "enabled": true,
-    "scan_time_beijing": "08:30",
+    "run_every_hours": 4,
+    "report_timeframe": "4h",
     "top_n_by_volume": 300,
     "top_n_gainers": 10,
-    "min_consecutive_days": 2,
+    "min_consecutive_candles": 2,
     "volume_ma_period": 20,
     "top_n_volume_ratio": 10
   },
