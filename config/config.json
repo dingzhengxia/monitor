@@ -94,7 +94,7 @@
       "exclude_timeframes": ["15m"]
     },
     "volatility_breakout": {
-      "enabled": true,
+      "enabled": false,
       "atr_period": 14,
       "atr_multiplier": 2.5,
       "volume_confirm": true,
