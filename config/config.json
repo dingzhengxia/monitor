@@ -120,9 +120,9 @@
         "method": "advanced",
         "clustering": {
           "enabled": true,
-          "atr_grouping_multiplier": 0.5,
-          "min_cluster_size": 2,
-          "min_separation_atr_mult": 0.6
+          "atr_grouping_multiplier": 1,
+          "min_cluster_size": 3,
+          "min_separation_atr_mult": 1.1
         },
         "static_pivots": {
           "enabled": true
@@ -134,7 +134,7 @@
       "breakout_period": 120,
       "volume_ma_period": 20,
       "atr_period": 14,
-      "atr_multiplier_breakout": 0.1,
+      "atr_multiplier_breakout": 1,
       "exclude_timeframes": []
     },
     "rsi_divergence": {

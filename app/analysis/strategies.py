@@ -36,7 +36,7 @@ def _prepare_and_send_notification(config, symbol, timeframe, df, signal_info):
 
     # 只有当“策略豁免开关开启” 且 “币种是白名单币种”时，才进行豁免
     final_volume_confirm = False if (
-                exemption_enabled_for_this_strategy and is_static_symbol) else original_volume_confirm
+            exemption_enabled_for_this_strategy and is_static_symbol) else original_volume_confirm
 
     if exemption_enabled_for_this_strategy and is_static_symbol and original_volume_confirm:
         logger.trace(
@@ -259,27 +259,49 @@ def check_level_breakout(exchange, symbol, timeframe, config, df):
                     prev_day_data = daily_ohlcv_list[-2]
                     prev_day_ohlc = {'high': prev_day_data[2], 'low': prev_day_data[3], 'close': prev_day_data[4]}
                     pivot_resistances, pivot_supports = calculate_pivot_points(prev_day_ohlc)
+
+                    # 【逻辑调整】为类型添加前缀以便区分
+                    for r in pivot_resistances: r['type'] = f"D-{r['type']}"  # D for Daily
+                    for s in pivot_supports: s['type'] = f"D-{s['type']}"
+
                     all_levels.extend(pivot_resistances)
                     all_levels.extend(pivot_supports)
                     logger.debug(
-                        f"[{symbol}|{timeframe}] 静态枢轴点分析完成，找到 {len(pivot_resistances) + len(pivot_supports)} 个关键位。")
+                        f"[{symbol}|{timeframe}] 静态日线枢轴点分析完成，找到 {len(pivot_resistances) + len(pivot_supports)} 个关键位。")
             except Exception as e:
                 logger.debug(f"[{symbol}|{timeframe}] 获取静态枢轴点数据失败: {e}")
 
-        # 3. 滚动枢轴点 (基于当前周期)
+        # 3. 【核心修改】基于滚动窗口计算枢轴点 (Rolling Window Pivots)
+        #    此部分取代了旧的“滚动高低点”逻辑
+        #    注意: 在config.json中，我们假设这个功能模块叫做'rolling_pivots'以便复用现有配置
         if level_conf.get('rolling_pivots', {}).get('enabled', False):
-            # 【核心修改】复用 breakout_period 参数
+            # 复用 breakout_period 参数作为回看窗口大小
             period = breakout_params.get('breakout_period', 120)
+
             if len(df_cleaned) > period:
+                # 确定回看窗口：从倒数第3根K线开始，往前取 period 根
                 lookback_df = df_cleaned.iloc[-period - 2:-2]
 
-                highest_high = lookback_df['high'].max()
-                lowest_low = lookback_df['low'].min()
+                if not lookback_df.empty:
+                    # 从窗口中提取计算所需的数据
+                    window_high = lookback_df['high'].max()
+                    window_low = lookback_df['low'].min()
+                    window_close = lookback_df['close'].iloc[-1]  # 使用窗口最后一根K线的收盘价
 
-                all_levels.append({'level': highest_high, 'type': f'Rolling High({period})'})
-                all_levels.append({'level': lowest_low, 'type': f'Rolling Low({period})'})
-                logger.debug(
-                    f"[{symbol}|{timeframe}] 滚动枢轴点分析完成 (周期 {period})，找到高点: {highest_high:.4f}, 低点: {lowest_low:.4f}。")
+                    # 准备数据并调用枢轴点算法
+                    window_ohlc = {'high': window_high, 'low': window_low, 'close': window_close}
+                    rolling_resistances, rolling_supports = calculate_pivot_points(window_ohlc)
+
+                    # 为类型添加前缀以便区分
+                    prefix = f'P({period})'  # 例如: P(120)
+                    for r in rolling_resistances: r['type'] = f"{prefix}-{r['type']}"
+                    for s in rolling_supports: s['type'] = f"{prefix}-{s['type']}"
+
+                    all_levels.extend(rolling_resistances)
+                    all_levels.extend(rolling_supports)
+
+                    logger.debug(
+                        f"[{symbol}|{timeframe}] 基于过去 {period} 根K线的滚动窗口枢轴点分析完成。")
 
         if not all_levels:
             logger.debug(f"[{symbol}|{timeframe}] 未找到任何关键位，策略结束。")
