@@ -19,20 +19,28 @@ def _prepare_and_send_notification(config, symbol, timeframe, df, signal_info):
     now_utc = datetime.now(timezone.utc)
     tf_minutes = timeframe_to_minutes(timeframe)
     params = config['strategy_params']
+    market_settings = config.get('market_settings', {})
 
     alert_key = signal_info['alert_key']
     if alerted_states.get(alert_key) and now_utc < alerted_states[alert_key]:
         return
 
-    static_bases = config.get('market_settings', {}).get('static_symbols', [])
+    static_bases = market_settings.get('static_symbols', [])
     symbol_base = symbol.split('/')[0].split(':')[0]
     is_static_symbol = symbol_base in static_bases
 
-    original_volume_confirm = signal_info.get('volume_must_confirm', False)
-    final_volume_confirm = False if is_static_symbol else original_volume_confirm
+    # 从 signal_info 中获取策略自身的豁免开关状态
+    exemption_enabled_for_this_strategy = signal_info.get('exempt_static_on_volume', False)
 
-    if is_static_symbol and original_volume_confirm:
-        logger.trace(f"[{symbol}] 是白名单币种，已豁免成交量确认。")
+    original_volume_confirm = signal_info.get('volume_must_confirm', False)
+
+    # 只有当“策略豁免开关开启” 且 “币种是白名单币种”时，才进行豁免
+    final_volume_confirm = False if (
+                exemption_enabled_for_this_strategy and is_static_symbol) else original_volume_confirm
+
+    if exemption_enabled_for_this_strategy and is_static_symbol and original_volume_confirm:
+        logger.trace(
+            f"[{symbol}] 是白名单币种，且策略 '{signal_info.get('log_name', 'N/A')}' 配置了豁免，已豁免成交量确认。")
 
     breakout_params = params.get('level_breakout', {})
     dynamic_multiplier = get_dynamic_volume_multiplier(symbol, config, signal_info.get('fallback_multiplier', 1.5))
@@ -44,7 +52,6 @@ def _prepare_and_send_notification(config, symbol, timeframe, df, signal_info):
         logger.debug(f"[{symbol}|{timeframe}] 信号 '{signal_info.get('log_name', 'N/A')}' 因成交量不足被过滤。")
         return
 
-    # 新逻辑：总是显示量能状态和倍数
     volume_label = f"放量({actual_vol_ratio:.1f}x) " if is_vol_over else f"缩量({actual_vol_ratio:.1f}x) "
     title = signal_info['title_template'].format(vol_label=volume_label).replace("  ", " ").strip()
 
