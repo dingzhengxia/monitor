@@ -163,7 +163,7 @@
       "run_interval": "4h",
       "top_n_by_volume": 300,
       "top_n_gainers": 10,
-      "min_consecutive_candles": 3,
+      "min_consecutive_candles": 5,
       "volume_ma_period": 20,
       "top_n_volume_ratio": 10
     },
@@ -173,7 +173,7 @@
       "run_interval": "1d",
       "top_n_by_volume": 300,
       "top_n_gainers": 10,
-      "min_consecutive_candles": 2,
+      "min_consecutive_candles": 3,
       "volume_ma_period": 20,
       "top_n_volume_ratio": 10
     }
