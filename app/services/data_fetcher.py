@@ -1,8 +1,34 @@
 # --- START OF FILE app/services/data_fetcher.py (WITH IGNORE_FILTERS FLAG) ---
 import time
 import pandas as pd
+import requests
+import json
 from loguru import logger
 from collections import defaultdict
+
+
+def fetch_fear_greed_index():
+    """ 从 alternative.me API 获取恐慌与贪婪指数 """
+    try:
+        logger.info("...正在获取恐慌贪婪指数...")
+        # 我们只需要最新的数据，所以 limit=1
+        response = requests.get("https://api.alternative.me/fng/?limit=1", timeout=10)
+        response.raise_for_status()
+        data = response.json()
+        if 'data' in data and len(data['data']) > 0:
+            latest_data = data['data'][0]
+            logger.info(f"✅ 成功获取恐慌贪婪指数: {latest_data['value']} ({latest_data['value_classification']})")
+            return {
+                "value": latest_data['value'],
+                "classification": latest_data['value_classification']
+            }
+    except requests.exceptions.RequestException as e:
+        logger.error(f"❌ 获取恐慌贪婪指数时网络错误: {e}")
+    except json.JSONDecodeError:
+        logger.error("❌ 解析恐慌贪婪指数响应失败，不是有效的JSON。")
+    except Exception as e:
+        logger.error(f"❌ 获取恐慌贪婪指数时发生未知错误: {e}", exc_info=True)
+    return None
 
 
 def get_top_n_symbols_by_volume(exchange, top_n=100, exclude_list=[], market_type='swap', retries=5, config=None,

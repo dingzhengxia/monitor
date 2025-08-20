@@ -165,7 +165,13 @@
       "top_n_gainers": 10,
       "min_consecutive_candles": 5,
       "volume_ma_period": 20,
-      "top_n_volume_ratio": 10
+      "top_n_volume_ratio": 10,
+      "market_sentiment": {
+        "enabled": true,
+        "rsi_period": 14,
+        "rsi_overbought": 70,
+        "rsi_oversold": 30
+      }
     },
     {
       "enabled": true,
@@ -175,7 +181,13 @@
       "top_n_gainers": 10,
       "min_consecutive_candles": 3,
       "volume_ma_period": 20,
-      "top_n_volume_ratio": 10
+      "top_n_volume_ratio": 10,
+      "market_sentiment": {
+        "enabled": true,
+        "rsi_period": 14,
+        "rsi_overbought": 75,
+        "rsi_oversold": 25
+      }
     }
   ],
   "notification_settings": {

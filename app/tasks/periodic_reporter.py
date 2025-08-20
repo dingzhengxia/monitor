@@ -1,6 +1,7 @@
 import time
 from datetime import datetime
-from app.services.data_fetcher import get_top_n_symbols_by_volume, fetch_ohlcv_data
+import pandas_ta as pta
+from app.services.data_fetcher import get_top_n_symbols_by_volume, fetch_ohlcv_data, fetch_fear_greed_index
 from app.services.notification_service import send_alert
 from app.state import cached_top_symbols
 from loguru import logger
@@ -53,20 +54,32 @@ def run_periodic_report(exchange, config, report_conf):
     report_name = report_conf.get("report_name", "周期报告")
     logger.info(f"--- 📊 开始执行 '{report_name}' ---")
     try:
+        # 新增：获取市场情绪配置
+        sentiment_conf = report_conf.get('market_sentiment', {})
+
         _update_cache_for_report(exchange, config, report_conf)
         if not cached_top_symbols:
             logger.warning(f"'{report_name}' 中止：热门币种缓存为空。")
             return
 
+        # 新增：获取恐慌贪婪指数
+        fear_greed_data = None
+        if sentiment_conf.get('enabled', False):
+            fear_greed_data = fetch_fear_greed_index()
+
         report_tf = report_conf.get('run_interval', '4h')
         symbols_to_scan = cached_top_symbols[:report_conf.get('top_n_by_volume', 100)]
 
         gainers_list, consecutive_up_list, volume_ratio_list = [], [], []
+        # 新增：超买超卖列表
+        overbought_list, oversold_list = [], []
+
         logger.info(f"...正在基于 {len(symbols_to_scan)} 个热门合约和 {report_tf} 周期生成 '{report_name}'...")
 
-        required_len = 200
+        # 确保有足够数据用于RSI计算
+        required_len = max(200, sentiment_conf.get('rsi_period', 14) + 50)
 
-        for symbol in symbols_to_scan:
+        for i, symbol in enumerate(symbols_to_scan):
             try:
                 df = fetch_ohlcv_data(exchange, symbol, report_tf, limit=required_len)
                 if df is None or len(df) < report_conf.get('volume_ma_period', 20) + 2:
@@ -79,8 +92,8 @@ def run_periodic_report(exchange, config, report_conf):
                                                   last_closed_candle['open']) * 100})
 
                 count = 0
-                for i in range(2, len(df) + 1):
-                    candle = df.iloc[-i]
+                for j in range(2, len(df) + 1):
+                    candle = df.iloc[-j]
                     if candle['close'] > candle['open']:
                         count += 1
                     else:
@@ -96,6 +109,18 @@ def run_periodic_report(exchange, config, report_conf):
                          'volume': last_closed_candle['volume'],
                          'volume_ma': vol_ma})
 
+                # --- 新增：超买超卖分析 (仅限前10) ---
+                if sentiment_conf.get('enabled', False) and i < 10:
+                    if len(df) >= sentiment_conf.get('rsi_period', 14) + 1:
+                        df['rsi'] = pta.rsi(df['close'], length=sentiment_conf.get('rsi_period', 14))
+                        last_rsi = df['rsi'].iloc[-2]  # 使用已收盘K线的RSI
+                        if last_rsi is not None:
+                            if last_rsi > sentiment_conf.get('rsi_overbought', 70):
+                                overbought_list.append({'symbol': symbol, 'rsi': last_rsi})
+                            elif last_rsi < sentiment_conf.get('rsi_oversold', 30):
+                                oversold_list.append({'symbol': symbol, 'rsi': last_rsi})
+                # --- 新增结束 ---
+
                 time.sleep(exchange.rateLimit / 2000)
             except Exception as e:
                 logger.debug(f"扫描 {symbol} 报告时出错: {e}")
@@ -104,6 +129,11 @@ def run_periodic_report(exchange, config, report_conf):
         now_str = datetime.now().strftime('%Y-%m-%d %H:%M')
         title = f"📰 {report_name} ({now_str}, {report_tf}周期)"
         message = ""
+
+        # --- 新增：添加恐慌贪婪指数到报告 ---
+        if fear_greed_data:
+            fng_emoji = "😱" if fear_greed_data['classification'] in ["Fear", "Extreme Fear"] else "🤑"
+            message += f"### {fng_emoji} 市场情绪: {fear_greed_data['classification']} ({fear_greed_data['value']}/100)\n\n---\n\n"
 
         if gainers_list:
             sorted_gainers = sorted(gainers_list, key=lambda x: x['gain'], reverse=True)[
@@ -120,6 +150,18 @@ def run_periodic_report(exchange, config, report_conf):
                 message += (f"{'🥇🥈🥉⚡️'[i if i < 4 else 3]} **{item['symbol']}**\n"
                             f"> **放量倍数: {item['ratio']:.2f} 倍**\n"
                             f"> (周期量: {item['volume']:.0f}, 均量: {item['volume_ma']:.0f})\n\n")
+
+        # --- 新增：添加超买超卖到报告 ---
+        if overbought_list:
+            message += f"\n---\n\n### 🥵 {report_tf} 周期热门区超买合约\n\n"
+            for item in overbought_list:
+                message += f"🥵 **{item['symbol']}**\n> **RSI: {item['rsi']:.1f}**\n\n"
+
+        if oversold_list:
+            message += f"\n---\n\n### 🥶 {report_tf} 周期热门区超卖合约\n\n"
+            for item in oversold_list:
+                message += f"🥶 **{item['symbol']}**\n> **RSI: {item['rsi']:.1f}**\n\n"
+        # --- 新增结束 ---
 
         final_consecutive_list = sorted(consecutive_up_list, key=lambda x: x['candles'], reverse=True)
         if final_consecutive_list:
