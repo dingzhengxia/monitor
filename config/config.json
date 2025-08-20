@@ -84,7 +84,7 @@
       "exclude_timeframes": []
     },
     "kdj_cross": {
-      "enabled": true,
+      "enabled": false,
       "fast_k": 9,
       "slow_k": 3,
       "slow_d": 3,
@@ -131,7 +131,7 @@
       "exclude_timeframes": []
     },
     "rsi_divergence": {
-      "enabled": false,
+      "enabled": true,
       "rsi_period": 14,
       "lookback_period": 60,
       "exclude_timeframes": []
@@ -152,7 +152,8 @@
       "exempt_static_on_volume": true,
       "volume_multiplier": 1.5,
       "exclude_timeframes": [
-        "15m"
+        "15m",
+        "1h"
       ]
     }
   },
