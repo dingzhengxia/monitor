@@ -134,7 +134,9 @@
       "enabled": true,
       "rsi_period": 14,
       "lookback_period": 60,
-      "exclude_timeframes": []
+      "exclude_timeframes": [
+        "1h"
+      ]
     },
     "consecutive_candles": {
       "enabled": true,
@@ -152,8 +154,7 @@
       "exempt_static_on_volume": true,
       "volume_multiplier": 1.5,
       "exclude_timeframes": [
-        "15m",
-        "1h"
+        "15m"
       ]
     }
   },
