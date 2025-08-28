@@ -1,7 +1,7 @@
 import time
 from datetime import datetime
 import pandas_ta as pta
-import numpy as np  # <-- 1. 导入 numpy 库
+import numpy as np
 from app.services.data_fetcher import get_top_n_symbols_by_volume, fetch_ohlcv_data, fetch_fear_greed_index
 from app.services.notification_service import send_alert
 from app.state import cached_top_symbols
@@ -106,23 +106,17 @@ def run_periodic_report(exchange, config, report_conf):
                          'volume': last_closed_candle['volume'],
                          'volume_ma': vol_ma})
 
-                # --- 超买超卖分析 (仅限前10) ---
                 if sentiment_conf.get('enabled', False) and i < 10:
                     if len(df) >= sentiment_conf.get('rsi_period', 14) + 1:
                         df['rsi'] = pta.rsi(df['close'], length=sentiment_conf.get('rsi_period', 14))
                         last_rsi = df['rsi'].iloc[-2]
 
-                        # 【核心修正】: 增加对RSI值的健壮性检查
-                        # 1. 确保 last_rsi 不是 None 也不是 NaN (Not a Number)
-                        # 2. 增加合理性判断，过滤掉 0 和 100 这种极端值
                         if last_rsi is not None and not np.isnan(last_rsi):
                             overbought_threshold = sentiment_conf.get('rsi_overbought', 70)
                             oversold_threshold = sentiment_conf.get('rsi_oversold', 30)
 
-                            # 检查超买: RSI必须在 (阈值, 100) 这个开区间内
                             if overbought_threshold < last_rsi < 100:
                                 overbought_list.append({'symbol': symbol, 'rsi': last_rsi})
-                            # 检查超卖: RSI必须在 (0, 阈值) 这个开区间内
                             elif 0 < last_rsi < oversold_threshold:
                                 oversold_list.append({'symbol': symbol, 'rsi': last_rsi})
 

@@ -7,7 +7,9 @@ from app.state import cached_top_symbols
 from app.services.data_fetcher import fetch_ohlcv_data, get_top_n_symbols_by_volume
 from app.analysis.strategies import (
     check_ema_signals, check_kdj_cross, check_volatility_breakout,
-    check_level_breakout, check_rsi_divergence, check_consecutive_candles
+    check_level_breakout, check_rsi_divergence, check_consecutive_candles,
+    # 新增导入
+    check_trend_channel_breakout
 )
 
 
@@ -57,6 +59,8 @@ STRATEGY_MAP = {
     'volatility_breakout': {'func': check_volatility_breakout, 'limit': 170},
     'level_breakout': {'func': check_level_breakout, 'limit': 200},
     'rsi_divergence': {'func': check_rsi_divergence, 'limit': 170},
+    # 新增策略到MAP中，需要更多数据用于回看，所以limit给大一点
+    'trend_channel_breakout': {'func': check_trend_channel_breakout, 'limit': 250},
     'consecutive_candles': {'func': check_consecutive_candles, 'limit': 50},
 }
 

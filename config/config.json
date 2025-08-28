@@ -105,7 +105,7 @@
       "exclude_timeframes": []
     },
     "level_breakout": {
-      "enabled": true,
+      "enabled": false,
       "volume_confirm": true,
       "exempt_static_on_volume": false,
       "volume_multiplier": 1.5,
@@ -137,6 +137,15 @@
       "exclude_timeframes": [
         "1h"
       ]
+    },
+    "trend_channel_breakout": {
+      "enabled": true,
+      "lookback_period": 90,
+      "min_touches": 3,
+      "volume_confirm": true,
+      "exempt_static_on_volume": false,
+      "volume_multiplier": 1.8,
+      "exclude_timeframes": []
     },
     "consecutive_candles": {
       "enabled": true,

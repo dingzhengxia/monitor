@@ -1,4 +1,3 @@
-# --- START OF FILE app/services/data_fetcher.py (WITH IGNORE_FILTERS FLAG) ---
 import time
 import pandas as pd
 import requests
@@ -11,7 +10,6 @@ def fetch_fear_greed_index():
     """ 从 alternative.me API 获取恐慌与贪婪指数 """
     try:
         logger.info("...正在获取恐慌贪婪指数...")
-        # 我们只需要最新的数据，所以 limit=1
         response = requests.get("https://api.alternative.me/fng/?limit=1", timeout=10)
         response.raise_for_status()
         data = response.json()
@@ -33,11 +31,9 @@ def fetch_fear_greed_index():
 
 def get_top_n_symbols_by_volume(exchange, top_n=100, exclude_list=[], market_type='swap', retries=5, config=None,
                                 ignore_adv_filters=False):
-    # 步骤 0: 解析配置，并提供安全的默认值
     scan_conf = config.get('market_settings', {}).get('dynamic_scan', {}) if config else {}
     primary_quote = scan_conf.get('primary_quote_currency', 'USDT').upper()
 
-    # 【核心修改】: 根据 ignore_adv_filters 标志决定是否启用高级筛选
     cross_filter_enabled = False
     if not ignore_adv_filters:
         cross_filter_conf = scan_conf.get('cross_market_filter', {})
@@ -64,9 +60,6 @@ def get_top_n_symbols_by_volume(exchange, top_n=100, exclude_list=[], market_typ
             tickers = exchange.fetch_tickers()
             logger.info(f"...获取成功，共 {len(tickers)} 个ticker，正在处理...")
 
-            # ... (后续代码与之前版本完全相同) ...
-
-            # 步骤 1: 构建地图
             base_to_quotes_map = defaultdict(set)
             primary_market_tickers = {}
 
@@ -91,7 +84,6 @@ def get_top_n_symbols_by_volume(exchange, top_n=100, exclude_list=[], market_typ
                 if quote == primary_quote:
                     primary_market_tickers[base] = ticker
 
-            # 步骤 2: 筛选动态候选币种
             candidate_bases = set()
 
             if cross_filter_enabled and must_exist_quotes and not ignore_adv_filters:
@@ -103,7 +95,6 @@ def get_top_n_symbols_by_volume(exchange, top_n=100, exclude_list=[], market_typ
             else:
                 candidate_bases = set(primary_market_tickers.keys())
 
-            # 步骤 3: 排序并返回动态列表
             dynamic_candidates = []
             for base in candidate_bases:
                 if base in primary_market_tickers:
