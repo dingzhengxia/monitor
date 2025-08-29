@@ -1,3 +1,4 @@
+# --- START OF FILE app/analysis/strategies.py (COMPLETE FINAL VERSION) ---
 from datetime import datetime, timezone
 from loguru import logger
 import pandas as pd
@@ -7,8 +8,8 @@ from app.state import alerted_states, save_alert_states
 from app.services.notification_service import send_alert
 from app.analysis.trend import get_current_trend, timeframe_to_minutes
 from app.analysis.levels import find_price_interest_zones, calculate_pivot_points
-# 新增导入
-from app.analysis.channels import detect_trend_channel
+# 【最终版】导入回归通道检测器
+from app.analysis.channels import detect_regression_channel
 from app.analysis.indicators import (
     get_dynamic_volume_multiplier, get_dynamic_atr_multiplier, is_realtime_volume_over,
     get_dynamic_consecutive_candles
@@ -301,18 +302,11 @@ def check_level_breakout(exchange, symbol, timeframe, config, df):
 
         if resistances:
             closest_res = resistances[0]
-            logger.debug(
-                f"[{symbol}|{timeframe}] 检查最近的阻力位: {closest_res['level']:.4f} (类型: {closest_res.get('type', 'N/A')})")
             cond1 = prev['close'] < closest_res['level']
             cond2 = current['close'] > closest_res['level'] + atr_break_buffer
             is_breakout = cond1 and cond2
-            logger.debug(
-                f"[{symbol}|{timeframe}] 突破条件检查: prev_close({prev['close']:.4f}) < level({closest_res['level']:.4f})? -> {cond1}")
-            logger.debug(
-                f"[{symbol}|{timeframe}] 突破条件检查: current_close({current['close']:.4f}) > level+buffer({closest_res['level'] + atr_break_buffer:.4f})? -> {cond2}")
 
             if is_breakout:
-                logger.info(f"[{symbol}|{timeframe}] ✅ 检测到阻力位突破！准备发送通知...")
                 level_type_str = "+".join(sorted(list(set(closest_res.get('types', [closest_res.get('type')])))))
                 is_confluence = len(closest_res.get('types', [])) > 1
                 level_prefix = "🔥共振区域" if is_confluence else "水平位"
@@ -334,18 +328,11 @@ def check_level_breakout(exchange, symbol, timeframe, config, df):
 
         if supports:
             closest_sup = supports[0]
-            logger.debug(
-                f"[{symbol}|{timeframe}] 检查最近的支撑位: {closest_sup['level']:.4f} (类型: {closest_sup.get('type', 'N/A')})")
             cond1 = prev['close'] > closest_sup['level']
             cond2 = current['close'] < closest_sup['level'] - atr_break_buffer
             is_breakdown = cond1 and cond2
-            logger.debug(
-                f"[{symbol}|{timeframe}] 跌破条件检查: prev_close({prev['close']:.4f}) > level({closest_sup['level']:.4f})? -> {cond1}")
-            logger.debug(
-                f"[{symbol}|{timeframe}] 跌破条件检查: current_close({current['close']:.4f}) < level-buffer({closest_sup['level'] - atr_break_buffer:.4f})? -> {cond2}")
 
             if is_breakdown:
-                logger.info(f"[{symbol}|{timeframe}] ✅ 检测到支撑位跌破！准备发送通知...")
                 level_type_str = "+".join(sorted(list(set(closest_sup.get('types', [closest_sup.get('type')])))))
                 is_confluence = len(closest_sup.get('types', [])) > 1
                 level_prefix = "🔥共振区域" if is_confluence else "水平位"
@@ -416,18 +403,19 @@ def check_rsi_divergence(exchange, symbol, timeframe, config, df):
 
 
 def check_trend_channel_breakout(exchange, symbol, timeframe, config, df):
-    """ 新增策略：检测趋势通道的突破或跌破 """
+    """ 【最终版策略】检测回归通道的突破或跌破 """
     try:
         params = config['strategy_params']
         channel_params = params.get('trend_channel_breakout', {})
+
         df_for_channel = df.copy()
         df_for_channel['symbol'] = symbol
         df_for_channel['timeframe'] = timeframe
 
-        channel_info = detect_trend_channel(
+        channel_info = detect_regression_channel(
             df_for_channel,
             lookback_period=channel_params.get('lookback_period', 90),
-            min_touches=channel_params.get('min_touches', 3)
+            std_dev_multiplier=channel_params.get('std_dev_multiplier', 2.0)
         )
 
         if not channel_info:
@@ -435,53 +423,65 @@ def check_trend_channel_breakout(exchange, symbol, timeframe, config, df):
 
         current = df.iloc[-1]
         prev = df.iloc[-2]
-        current_res_line = channel_info['resistance_line'].iloc[-1]
-        prev_res_line = channel_info['resistance_line'].iloc[-2]
-        current_sup_line = channel_info['support_line'].iloc[-1]
-        prev_sup_line = channel_info['support_line'].iloc[-2]
 
-        if channel_info['type'] == 'descending':
-            is_breakout = prev['close'] < prev_res_line and current['close'] > current_res_line
+        current_upper_band = channel_info['upper_band'].iloc[-1]
+        prev_upper_band = channel_info['upper_band'].iloc[-2]
+
+        current_lower_band = channel_info['lower_band'].iloc[-1]
+        prev_lower_band = channel_info['lower_band'].iloc[-2]
+
+        # 信号1: 突破下降趋势的回归通道 (看涨)
+        if channel_info['slope'] < 0:
+            is_breakout = prev['close'] < prev_upper_band and current['close'] > current_upper_band
             if is_breakout:
                 signal_info = {
-                    'log_name': 'Descending Channel Breakout',
-                    'alert_key': f"{symbol}_{timeframe}_CHANNEL_BREAKOUT_UP",
+                    'log_name': 'Regression Channel Breakout',
+                    'alert_key': f"{symbol}_{timeframe}_REGRESSION_CHANNEL_BREAKOUT_UP",
                     'volume_must_confirm': channel_params.get('volume_confirm', True),
                     'fallback_multiplier': channel_params.get('volume_multiplier', 1.8),
-                    'title_template': f"📈 {{vol_label}}突破下降通道: {symbol} ({timeframe})",
-                    'message_template': ("{trend_message}**信号**: **突破下降趋势通道上轨**。\n\n"
+                    'title_template': f"📈 {{vol_label}}突破下降回归通道: {symbol} ({timeframe})",
+                    'message_template': ("{trend_message}**信号**: **突破下降回归通道上轨**。\n\n"
                                          "**价格行为**:\n"
                                          "> **当前价**: {current_close:.4f}\n"
-                                         "> **通道上轨**: {resistance_line:.4f}\n\n"
-                                         "这是一个潜在的趋势反转或加速上涨信号。\n\n"
+                                         "> **通道上轨**: {upper_band:.4f}\n\n"
+                                         "价格偏离了近 {lookback} 根K线的统计下行趋势，可能是趋势反转的早期信号。\n\n"
                                          "{vol_text}"),
-                    'template_data': {"current_close": current['close'], "resistance_line": current_res_line},
+                    'template_data': {
+                        "current_close": current['close'],
+                        "upper_band": current_upper_band,
+                        "lookback": channel_params.get('lookback_period', 90)
+                    },
                     'cooldown_mult': 4
                 }
                 _prepare_and_send_notification(config, symbol, timeframe, df, signal_info)
 
-        elif channel_info['type'] == 'ascending':
-            is_breakdown = prev['close'] > prev_sup_line and current['close'] < current_sup_line
+        # 信号2: 跌破上升趋势的回归通道 (看跌)
+        elif channel_info['slope'] > 0:
+            is_breakdown = prev['close'] > prev_lower_band and current['close'] < current_lower_band
             if is_breakdown:
                 signal_info = {
-                    'log_name': 'Ascending Channel Breakdown',
-                    'alert_key': f"{symbol}_{timeframe}_CHANNEL_BREAKDOWN_DOWN",
+                    'log_name': 'Regression Channel Breakdown',
+                    'alert_key': f"{symbol}_{timeframe}_REGRESSION_CHANNEL_BREAKDOWN_DOWN",
                     'volume_must_confirm': channel_params.get('volume_confirm', True),
                     'fallback_multiplier': channel_params.get('volume_multiplier', 1.8),
-                    'title_template': f"📉 {{vol_label}}跌破上升通道: {symbol} ({timeframe})",
-                    'message_template': ("{trend_message}**信号**: **跌破上升趋势通道下轨**。\n\n"
+                    'title_template': f"📉 {{vol_label}}跌破上升回归通道: {symbol} ({timeframe})",
+                    'message_template': ("{trend_message}**信号**: **跌破上升回归通道下轨**。\n\n"
                                          "**价格行为**:\n"
                                          "> **当前价**: {current_close:.4f}\n"
-                                         "> **通道下轨**: {support_line:.4f}\n\n"
-                                         "这是一个潜在的趋势反转或加速下跌信号。\n\n"
+                                         "> **通道下轨**: {lower_band:.4f}\n\n"
+                                         "价格偏离了近 {lookback} 根K线的统计上行趋势，可能是趋势反转的早期信号。\n\n"
                                          "{vol_text}"),
-                    'template_data': {"current_close": current['close'], "support_line": current_sup_line},
+                    'template_data': {
+                        "current_close": current['close'],
+                        "lower_band": current_lower_band,
+                        "lookback": channel_params.get('lookback_period', 90)
+                    },
                     'cooldown_mult': 4
                 }
                 _prepare_and_send_notification(config, symbol, timeframe, df, signal_info)
 
     except Exception as e:
-        logger.error(f"❌ 在 {symbol} {timeframe} (趋势通道突破) 中出错: {e}", exc_info=True)
+        logger.error(f"❌ 在 {symbol} {timeframe} (回归通道突破) 中出错: {e}", exc_info=True)
 
 
 def check_consecutive_candles(exchange, symbol, timeframe, config, df):
@@ -577,3 +577,4 @@ def check_consecutive_candles(exchange, symbol, timeframe, config, df):
 
     except Exception as e:
         logger.error(f"❌ 在 {symbol} {timeframe} (无状态连续K线信号) 中出错: {e}", exc_info=True)
+# --- END OF FILE app/analysis/strategies.py (COMPLETE FINAL VERSION) ---

@@ -138,12 +138,12 @@
         "1h"
       ]
     },
-    "trend_channel_breakout": {
+     "trend_channel_breakout": {
       "enabled": true,
       "lookback_period": 90,
-      "min_touches": 3,
+      "std_dev_multiplier": 2.0,
       "volume_confirm": true,
-      "exempt_static_on_volume": false,
+      "exempt_static_on_volume": true,
       "volume_multiplier": 1.8,
       "exclude_timeframes": []
     },
