@@ -403,7 +403,7 @@ def check_rsi_divergence(exchange, symbol, timeframe, config, df):
 
 
 def check_trend_channel_breakout(exchange, symbol, timeframe, config, df):
-    """ 【最终版策略】检测回归通道的突破或跌破 """
+    """ 【终极版策略】使用动态趋势区间检测回归通道的突破或跌破 """
     try:
         params = config['strategy_params']
         channel_params = params.get('trend_channel_breakout', {})
@@ -414,25 +414,30 @@ def check_trend_channel_breakout(exchange, symbol, timeframe, config, df):
 
         channel_info = detect_regression_channel(
             df_for_channel,
-            lookback_period=channel_params.get('lookback_period', 90),
+            lookback_period=channel_params.get('lookback_period', 100),
+            min_trend_length=channel_params.get('min_trend_length', 20),
             std_dev_multiplier=channel_params.get('std_dev_multiplier', 2.0)
         )
 
         if not channel_info:
             return
 
-        current = df.iloc[-1]
-        prev = df.iloc[-2]
+        # 获取原始DataFrame的最后两根K线
+        current_full_df = df.iloc[-1]
+        prev_full_df = df.iloc[-2]
 
+        # 获取通道计算结果的最后两根K线
+        # 注意：这里的索引和原始df不同，但最后两根的位置是对应的
         current_upper_band = channel_info['upper_band'].iloc[-1]
         prev_upper_band = channel_info['upper_band'].iloc[-2]
-
         current_lower_band = channel_info['lower_band'].iloc[-1]
         prev_lower_band = channel_info['lower_band'].iloc[-2]
 
+        trend_length = channel_info['trend_length']
+
         # 信号1: 突破下降趋势的回归通道 (看涨)
         if channel_info['slope'] < 0:
-            is_breakout = prev['close'] < prev_upper_band and current['close'] > current_upper_band
+            is_breakout = prev_full_df['close'] < prev_upper_band and current_full_df['close'] > current_upper_band
             if is_breakout:
                 signal_info = {
                     'log_name': 'Regression Channel Breakout',
@@ -441,15 +446,16 @@ def check_trend_channel_breakout(exchange, symbol, timeframe, config, df):
                     'fallback_multiplier': channel_params.get('volume_multiplier', 1.8),
                     'title_template': f"📈 {{vol_label}}突破下降回归通道: {symbol} ({timeframe})",
                     'message_template': ("{trend_message}**信号**: **突破下降回归通道上轨**。\n\n"
-                                         "**价格行为**:\n"
-                                         "> **当前价**: {current_close:.4f}\n"
+                                         "**趋势分析**:\n"
+                                         "> **趋势持续**: {trend_length} 根K线\n"
+                                         "> **突破价格**: {current_close:.4f}\n"
                                          "> **通道上轨**: {upper_band:.4f}\n\n"
-                                         "价格偏离了近 {lookback} 根K线的统计下行趋势，可能是趋势反转的早期信号。\n\n"
+                                         "价格偏离了近期的统计下行趋势，可能是趋势反转的早期信号。\n\n"
                                          "{vol_text}"),
                     'template_data': {
-                        "current_close": current['close'],
+                        "current_close": current_full_df['close'],
                         "upper_band": current_upper_band,
-                        "lookback": channel_params.get('lookback_period', 90)
+                        "trend_length": trend_length
                     },
                     'cooldown_mult': 4
                 }
@@ -457,7 +463,7 @@ def check_trend_channel_breakout(exchange, symbol, timeframe, config, df):
 
         # 信号2: 跌破上升趋势的回归通道 (看跌)
         elif channel_info['slope'] > 0:
-            is_breakdown = prev['close'] > prev_lower_band and current['close'] < current_lower_band
+            is_breakdown = prev_full_df['close'] > prev_lower_band and current_full_df['close'] < current_lower_band
             if is_breakdown:
                 signal_info = {
                     'log_name': 'Regression Channel Breakdown',
@@ -466,15 +472,16 @@ def check_trend_channel_breakout(exchange, symbol, timeframe, config, df):
                     'fallback_multiplier': channel_params.get('volume_multiplier', 1.8),
                     'title_template': f"📉 {{vol_label}}跌破上升回归通道: {symbol} ({timeframe})",
                     'message_template': ("{trend_message}**信号**: **跌破上升回归通道下轨**。\n\n"
-                                         "**价格行为**:\n"
-                                         "> **当前价**: {current_close:.4f}\n"
+                                         "**趋势分析**:\n"
+                                         "> **趋势持续**: {trend_length} 根K线\n"
+                                         "> **跌破价格**: {current_close:.4f}\n"
                                          "> **通道下轨**: {lower_band:.4f}\n\n"
-                                         "价格偏离了近 {lookback} 根K线的统计上行趋势，可能是趋势反转的早期信号。\n\n"
+                                         "价格偏离了近期的统计上行趋势，可能是趋势反转的早期信号。\n\n"
                                          "{vol_text}"),
                     'template_data': {
-                        "current_close": current['close'],
+                        "current_close": current_full_df['close'],
                         "lower_band": current_lower_band,
-                        "lookback": channel_params.get('lookback_period', 90)
+                        "trend_length": trend_length
                     },
                     'cooldown_mult': 4
                 }

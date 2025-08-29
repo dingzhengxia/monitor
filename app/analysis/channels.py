@@ -1,53 +1,81 @@
-# --- START OF FILE app/analysis/channels.py (REGRESSION CHANNEL ALGORITHM) ---
+# --- START OF FILE app/analysis/channels.py (DYNAMIC TREND SEGMENT ALGORITHM) ---
 import numpy as np
 import pandas as pd
 from loguru import logger
 
 
-def detect_regression_channel(df: pd.DataFrame, lookback_period: int = 90, std_dev_multiplier: float = 2.0):
+def detect_regression_channel(df: pd.DataFrame, lookback_period: int = 100, min_trend_length: int = 20,
+                              std_dev_multiplier: float = 2.0):
     """
-    【最终版算法】使用线性回归和标准差来构建通道，与TradingView的“回归趋势”工具一致。
+    【终极版算法】自动检测趋势段并计算回归通道，与人工画线逻辑高度一致。
 
-    :param df: 输入的OHLCV DataFrame。
-    :param lookback_period: 用于计算回归趋势的回看K线数量。
-    :param std_dev_multiplier: 标准差倍数，用于确定通道宽度。
-    :return: 如果成功构建通道，则返回包含通道信息的字典，否则返回 None。
+    1. 在`lookback_period`内找到最近的最高点和最低点。
+    2. 确定哪个点是当前趋势的起点。
+    3. 仅对从起点到现在的这个动态区间应用回归通道计算。
     """
     if len(df) < lookback_period:
         return None
 
-    data = df.iloc[-lookback_period:].copy()
+    # 1. 在回看窗口内寻找趋势的潜在起点
+    search_window = df.iloc[-lookback_period:]
 
-    # 1. 准备数据进行线性回归
-    # x 是时间索引 (0, 1, 2, ...), y 是收盘价
-    x = np.arange(len(data))
-    y = data['close'].values
+    # idxmax()/idxmin() 返回的是索引标签，我们需要转换为整数位置
+    last_high_pos = search_window['high'].argmax()
+    last_low_pos = search_window['low'].argmin()
 
-    # 2. 计算线性回归线 (y = slope * x + intercept)
+    # 确定趋势起点
+    # 如果最高点比最低点更近，说明当前可能处于一个从高点开始的下降趋势
+    # 反之，则处于一个从低点开始的上升趋势
+    if last_high_pos > last_low_pos:
+        trend_start_pos = last_high_pos
+        trend_type = 'down'
+    else:
+        trend_start_pos = last_low_pos
+        trend_type = 'up'
+
+    # 2. 截取动态的趋势区间
+    trend_df = search_window.iloc[trend_start_pos:].copy()
+
+    # 3. 验证趋势区间的有效性
+    if len(trend_df) < min_trend_length:
+        logger.trace(
+            f"[{df.iloc[-1]['symbol']}|{df.iloc[-1]['timeframe']}] 识别到的趋势段过短 ({len(trend_df)} < {min_trend_length})，跳过。")
+        return None
+
+    # 4. 对这个动态区间应用回归通道计算
+    x = np.arange(len(trend_df))
+    y = trend_df['close'].values
+
     slope, intercept = np.polyfit(x, y, 1)
 
-    # 为了避免在横盘时发出无效信号，要求斜率有一定的幅度
-    # 斜率的意义是“每根K线价格的平均变化量”
-    # 我们要求这个变化量至少是平均价格的 0.05%
-    min_slope_threshold = data['close'].mean() * 0.0005
+    # 验证趋势方向是否与预期一致
+    if (trend_type == 'up' and slope < 0) or (trend_type == 'down' and slope > 0):
+        logger.trace(
+            f"[{df.iloc[-1]['symbol']}|{df.iloc[-1]['timeframe']}] 趋势识别与斜率计算结果不符，可能是震荡市，跳过。")
+        return None
+
+    # 过滤横盘
+    min_slope_threshold = trend_df['close'].mean() * 0.0005
     if abs(slope) < min_slope_threshold:
         logger.trace(f"[{df.iloc[-1]['symbol']}|{df.iloc[-1]['timeframe']}] 市场横盘，回归通道斜率过小，跳过。")
         return None
 
-    data['regression_line'] = slope * x + intercept
+    trend_df['regression_line'] = slope * x + intercept
 
-    # 3. 计算价格相对于回归线的标准差
-    deviations = data['close'] - data['regression_line']
+    deviations = trend_df['close'] - trend_df['regression_line']
     std_dev = np.std(deviations)
 
-    # 4. 计算上下通道线
-    data['upper_band'] = data['regression_line'] + (std_dev * std_dev_multiplier)
-    data['lower_band'] = data['regression_line'] - (std_dev * std_dev_multiplier)
+    trend_df['upper_band'] = trend_df['regression_line'] + (std_dev * std_dev_multiplier)
+    trend_df['lower_band'] = trend_df['regression_line'] - (std_dev * std_dev_multiplier)
 
-    logger.trace(f"[{df.iloc[-1]['symbol']}|{df.iloc[-1]['timeframe']}] 检测到回归通道，斜率: {slope:.4f}")
+    logger.trace(
+        f"[{df.iloc[-1]['symbol']}|{df.iloc[-1]['timeframe']}] 在过去{len(trend_df)}根K线中识别到 {trend_type} 趋势回归通道。")
+
+    # 返回的结果现在只包含趋势段的数据
     return {
         "slope": slope,
-        "upper_band": data['upper_band'],
-        "lower_band": data['lower_band'],
+        "upper_band": trend_df['upper_band'],
+        "lower_band": trend_df['lower_band'],
+        "trend_length": len(trend_df)
     }
-# --- END OF FILE app/analysis/channels.py (REGRESSION CHANNEL ALGORITHM) ---
+# --- END OF FILE app/analysis/channels.py (DYNAMIC TREND SEGMENT ALGORITHM) ---
