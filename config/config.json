@@ -140,7 +140,7 @@
     },
     "trend_channel_breakout": {
       "enabled": true,
-      "lookback_period": 100,
+      "lookback_period": 50,
       "min_trend_length": 20,
       "std_dev_multiplier": 2.0,
       "volume_confirm": true,
