@@ -131,7 +131,7 @@
       "exclude_timeframes": []
     },
     "rsi_divergence": {
-      "enabled": true,
+      "enabled": false,
       "rsi_period": 14,
       "lookback_period": 60,
       "exclude_timeframes": [
