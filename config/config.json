@@ -138,16 +138,49 @@
         "1h"
       ]
     },
-    "trend_channel_breakout": {
-      "enabled": true,
-      "lookback_period": 50,
-      "min_trend_length": 20,
-      "std_dev_multiplier": 2.0,
-      "volume_confirm": true,
-      "exempt_static_on_volume": true,
-      "volume_multiplier": 1.8,
-      "exclude_timeframes": []
-    },
+    "trend_channel_breakout": [
+      {
+        "name": "短期趋势通道 (1h/4h)",
+        "enabled": true,
+        "min_trend_length": 15,
+        "std_dev_multiplier": 1.8,
+        "volume_confirm": true,
+        "exempt_static_on_volume": true,
+        "volume_multiplier": 1.5,
+        "exclude_timeframes": [
+          "1d"
+        ],
+        "overrides_by_timeframe": {
+          "1h": {
+            "lookback_period": 120
+          },
+          "4h": {
+            "lookback_period": 80
+          }
+        }
+      },
+      {
+        "name": "长期趋势通道 (All TFs)",
+        "enabled": true,
+        "min_trend_length": 30,
+        "std_dev_multiplier": 2.2,
+        "volume_confirm": true,
+        "exempt_static_on_volume": true,
+        "volume_multiplier": 2.0,
+        "exclude_timeframes": [],
+        "overrides_by_timeframe": {
+          "1h": {
+            "lookback_period": 300
+          },
+          "4h": {
+            "lookback_period": 200
+          },
+          "1d": {
+            "lookback_period": 150
+          }
+        }
+      }
+    ],
     "consecutive_candles": {
       "enabled": true,
       "dynamic_count": {
