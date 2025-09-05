@@ -9,7 +9,8 @@ from app.analysis.strategies import (
     check_ema_signals, check_kdj_cross, check_volatility_breakout,
     check_level_breakout, check_rsi_divergence, check_consecutive_candles,
     check_trend_channel_breakout,
-    _get_params_for_timeframe  # 导入参数辅助函数
+    check_order_block_interaction,  # <-- 新增导入
+    _get_params_for_timeframe
 )
 
 
@@ -52,6 +53,9 @@ STRATEGY_MAP = {
     'rsi_divergence': {'func': check_rsi_divergence, 'limit': 170},
     'trend_channel_breakout': {'func': check_trend_channel_breakout, 'limit': 350},  # 增加limit以适应更大的lookback
     'consecutive_candles': {'func': check_consecutive_candles, 'limit': 50},
+    # V-- 新增策略 --V
+    'order_block_interaction': {'func': check_order_block_interaction, 'limit': 250},  # 需要足够的回看周期
+    # ^-- 新增策略 --^
 }
 
 

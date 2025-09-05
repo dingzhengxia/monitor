@@ -1,5 +1,22 @@
-import signal
 import sys
+import platform
+
+# V-- 使用这个终极版补丁 --V
+# 解决 pandas-ta 在 Windows 上导入 posix 和 pread 的问题
+if platform.system() == "Windows":
+    class FakePosix:
+        """一个模拟模块，提供一个空的 pread 函数来满足导入需求"""
+
+        def pread(self, *args, **kwargs):
+            # 这是一个空函数，什么也不做
+            pass
+
+
+    # 将这个模拟类的实例作为 'posix' 模块放入缓存
+    sys.modules['posix'] = FakePosix()
+# ^-- 补丁结束 --^
+
+import signal
 import threading
 
 import ccxt

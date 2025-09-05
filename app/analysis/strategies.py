@@ -4,6 +4,7 @@ from loguru import logger
 import pandas as pd
 import pandas_ta as pta
 
+from app.analysis.order_blocks import find_latest_order_blocks
 from app.state import alerted_states, save_alert_states
 from app.services.notification_service import send_alert
 from app.analysis.trend import get_current_trend, timeframe_to_minutes
@@ -454,7 +455,11 @@ def check_consecutive_candles(exchange, symbol, timeframe, config, df, consecuti
     try:
         fallback_n = consecutive_params.get('min_consecutive_candles', 4)
         min_n_to_alert = get_dynamic_consecutive_candles(symbol, config, fallback_n)
-        if len(df) < min_n_to_alert + 1: return
+
+        # 【健壮性修复】: 确保有足够的K线来安全地访问 df.iloc[-2] 和 df.iloc[-3]
+        # 我们至少需要3根K线来检查反转 (current, last, prev)，所以增加一个保底检查
+        if len(df) < min_n_to_alert + 2 or len(df) < 3:
+            return
 
         def count_backwards(start_index, direction):
             count = 0
@@ -475,32 +480,45 @@ def check_consecutive_candles(exchange, symbol, timeframe, config, df, consecuti
         is_last_down = last_candle['close'] < last_candle['open'];
         is_prev_up = prev_candle['close'] > prev_candle['open'];
         is_prev_down = prev_candle['close'] < prev_candle['open']
+
+        # 检查下跌趋势后的反转信号 (转为上涨)
         if is_last_up and is_prev_down:
             prev_down_trend_count = count_backwards(len(df) - 3, 'down')
             if prev_down_trend_count >= min_n_to_alert:
                 alert_key = f"{symbol}_{timeframe}_REVERSAL_UP_{config_index}_{last_candle['timestamp']}"
                 signal_info = {'alert_key': alert_key, 'title_template': f"🔄 趋势反转: {symbol} ({timeframe})",
                                'message_template': (
-                                   "{trend_message}**信号**: **下跌趋势终结**!\n\n> 连续下跌 **{prev_down_trend_count}** 根K线后，出现首根上涨K线。\n> **当前价**: {last_candle['close']:.4f}{vol_text}"),
-                               'template_data': {'prev_down_trend_count': prev_down_trend_count},
+                                   "{trend_message}**信号**: **下跌趋势终结**!\n\n> 连续下跌 **{prev_down_trend_count}** 根K线后，出现首根上涨K线。\n> **当前价**: {current_price:.4f}\n\n{vol_text}"),
+                               'template_data': {'prev_down_trend_count': prev_down_trend_count,
+                                                 'current_price': last_candle['close']},
                                'cooldown_logic': 'align_to_period_end', 'always_show_volume': True}
                 _prepare_and_send_notification(config, symbol, timeframe, df, signal_info)
+
+        # 检查上涨趋势后的反转信号 (转为下跌)
         elif is_last_down and is_prev_up:
             prev_up_trend_count = count_backwards(len(df) - 3, 'up')
             if prev_up_trend_count >= min_n_to_alert:
                 alert_key = f"{symbol}_{timeframe}_REVERSAL_DOWN_{config_index}_{last_candle['timestamp']}"
                 signal_info = {'alert_key': alert_key, 'title_template': f"🔄 趋势反转: {symbol} ({timeframe})",
                                'message_template': (
-                                   "{trend_message}**信号**: **上涨趋势终结**!\n\n> 连续上涨 **{prev_up_trend_count}** 根K线后，出现首根下跌K线。\n> **当前价**: {last_candle['close']:.4f}{vol_text}"),
-                               'template_data': {'prev_up_trend_count': prev_up_trend_count},
+                                   "{trend_message}**信号**: **上涨趋势终结**!\n\n> 连续上涨 **{prev_up_trend_count}** 根K线后，出现首根下跌K线。\n> **当前价**: {current_price:.4f}\n\n{vol_text}"),
+                               'template_data': {'prev_up_trend_count': prev_up_trend_count,
+                                                 'current_price': last_candle['close']},
                                'cooldown_logic': 'align_to_period_end', 'always_show_volume': True}
                 _prepare_and_send_notification(config, symbol, timeframe, df, signal_info)
+
+        # 检查趋势持续信号
         current_trend_count = 0;
         current_direction = None
+
+        # 我们只关心上一根K线(last_candle)的状态
         if is_last_up:
-            current_direction = 'up'; current_trend_count = count_backwards(len(df) - 2, 'up')
+            current_direction = 'up';
+            current_trend_count = count_backwards(len(df) - 2, 'up')
         elif is_last_down:
-            current_direction = 'down'; current_trend_count = count_backwards(len(df) - 2, 'down')
+            current_direction = 'down';
+            current_trend_count = count_backwards(len(df) - 2, 'down')
+
         if current_trend_count >= min_n_to_alert:
             alert_key = f"{symbol}_{timeframe}_CONTINUOUS_{current_direction.upper()}_{config_index}_{last_candle['timestamp']}";
             direction_text = "上涨" if current_direction == 'up' else "下跌";
@@ -508,14 +526,113 @@ def check_consecutive_candles(exchange, symbol, timeframe, config, df, consecuti
             signal_info = {'alert_key': alert_key,
                            'title_template': f"{emoji} 趋势持续: {{vol_label}}{symbol} ({timeframe})",
                            'message_template': (
-                               "{trend_message}**信号**: 价格已连续 **{current_trend_count}** 个周期{direction_text}。\n\n> **当前价**: {last_candle['close']:.4f}{vol_text}"),
+                               "{trend_message}**信号**: 价格已连续 **{current_trend_count}** 个周期{direction_text}。\n\n> **当前价**: {current_price:.4f}\n\n{vol_text}"),
                            'template_data': {'current_trend_count': current_trend_count,
-                                             'direction_text': direction_text}, 'cooldown_logic': 'align_to_period_end',
+                                             'direction_text': direction_text,
+                                             'current_price': last_candle['close']},
+                           'cooldown_logic': 'align_to_period_end',
                            'fallback_multiplier': consecutive_params.get('volume_multiplier', 1.5),
                            'volume_must_confirm': consecutive_params.get('volume_confirm', False),
                            'always_show_volume': True}
             _prepare_and_send_notification(config, symbol, timeframe, df, signal_info)
+
     except Exception as e:
         logger.error(f"❌ 在 {symbol} {timeframe} (无状态连续K线信号) 中出错: {e}", exc_info=True)
 
+
+# V-- 在文件末尾添加这个新的策略函数 --V
+def check_order_block_interaction(exchange, symbol, timeframe, config, df, ob_params, config_index=0):
+    try:
+        swing_length = ob_params.get('swing_length', 10)
+        atr_multiplier = ob_params.get('atr_multiplier', 0.1)
+        bull_ob, bear_ob = find_latest_order_blocks(df.copy(), swing_length, atr_multiplier)
+
+        if not (bull_ob or bear_ob):
+            return
+
+        current = df.iloc[-1]
+        prev = df.iloc[-2]
+
+        # 检查与最新熊市订单块(阻力区)的交互
+        if bear_ob:
+            top, bottom = bear_ob['top'], bear_ob['bottom']
+            # 信号: 价格进入阻力区 (测试/拒绝)
+            if ob_params.get('alert_on_rejection', True) and \
+                    prev['close'] < bottom and current['close'] >= bottom and current['close'] <= top:
+                signal_info = {
+                    'log_name': 'OrderBlock Rejection',
+                    'alert_key': f"{symbol}_{timeframe}_OB_REJECT_BEAR_{bear_ob['timestamp']}",
+                    'volume_must_confirm': False,  # 通常OB交互不强制要求成交量
+                    'title_template': f"⚠️ {symbol} ({timeframe}) 测试关键阻力区",
+                    'message_template': ("{trend_message}**信号**: 价格已进入由前期市场结构形成的**熊市订单块(阻力区)**。\n\n"
+                                         "> **阻力区间**: `{bottom:.4f} - {top:.4f}`\n"
+                                         "> **当前价格**: `{current_close:.4f}`\n\n"
+                                         "请关注此处是否出现价格拒绝或反转信号。\n\n"
+                                         "{vol_text}"),
+                    'template_data': {"bottom": bottom, "top": top, "current_close": current['close']},
+                    'cooldown_mult': 2,
+                    'always_show_volume': True
+                }
+                _prepare_and_send_notification(config, symbol, timeframe, df, signal_info)
+
+            # 信号: 价格突破阻力区
+            if ob_params.get('alert_on_breakout', False) and prev['close'] < top and current['close'] > top:
+                signal_info = {
+                    'log_name': 'OrderBlock Breakout',
+                    'alert_key': f"{symbol}_{timeframe}_OB_BREAK_BEAR_{bear_ob['timestamp']}",
+                    'volume_must_confirm': True,  # 突破最好有成交量确认
+                    'fallback_multiplier': 1.8,
+                    'title_template': f"🚀 {{vol_label}}突破关键阻力: {symbol} ({timeframe})",
+                    'message_template': ("{trend_message}**信号**: 价格**已突破**前期关键的**熊市订单块(阻力区)**。\n\n"
+                                         "> **原阻力区间**: `{bottom:.4f} - {top:.4f}`\n"
+                                         "> **突破价格**: `{current_close:.4f}`\n\n"
+                                         "市场结构可能发生转变，原阻力可能转为支撑。\n\n"
+                                         "{vol_text}"),
+                    'template_data': {"bottom": bottom, "top": top, "current_close": current['close']},
+                    'cooldown_mult': 4,
+                }
+                _prepare_and_send_notification(config, symbol, timeframe, df, signal_info)
+
+        # 检查与最新牛市订单块(支撑区)的交互
+        if bull_ob:
+            top, bottom = bull_ob['top'], bull_ob['bottom']
+            # 信号: 价格进入支撑区 (测试/支撑)
+            if ob_params.get('alert_on_rejection', True) and \
+                    prev['close'] > top and current['close'] <= top and current['close'] >= bottom:
+                signal_info = {
+                    'log_name': 'OrderBlock Support',
+                    'alert_key': f"{symbol}_{timeframe}_OB_SUPPORT_BULL_{bull_ob['timestamp']}",
+                    'volume_must_confirm': False,
+                    'title_template': f"💡 {symbol} ({timeframe}) 测试关键支撑区",
+                    'message_template': ("{trend_message}**信号**: 价格已进入由前期市场结构形成的**牛市订单块(支撑区)**。\n\n"
+                                         "> **支撑区间**: `{bottom:.4f} - {top:.4f}`\n"
+                                         "> **当前价格**: `{current_close:.4f}`\n\n"
+                                         "请关注此处是否获得支撑或出现反弹信号。\n\n"
+                                         "{vol_text}"),
+                    'template_data': {"bottom": bottom, "top": top, "current_close": current['close']},
+                    'cooldown_mult': 2,
+                    'always_show_volume': True
+                }
+                _prepare_and_send_notification(config, symbol, timeframe, df, signal_info)
+
+            # 信号: 价格跌破支撑区
+            if ob_params.get('alert_on_breakout', False) and prev['close'] > bottom and current['close'] < bottom:
+                signal_info = {
+                    'log_name': 'OrderBlock Breakdown',
+                    'alert_key': f"{symbol}_{timeframe}_OB_BREAK_BULL_{bull_ob['timestamp']}",
+                    'volume_must_confirm': True,
+                    'fallback_multiplier': 1.8,
+                    'title_template': f"📉 {{vol_label}}跌破关键支撑: {symbol} ({timeframe})",
+                    'message_template': ("{trend_message}**信号**: 价格**已跌破**前期关键的**牛市订单块(支撑区)**。\n\n"
+                                         "> **原支撑区间**: `{bottom:.4f} - {top:.4f}`\n"
+                                         "> **跌破价格**: `{current_close:.4f}`\n\n"
+                                         "市场结构可能发生转变，原支撑可能转为阻力。\n\n"
+                                         "{vol_text}"),
+                    'template_data': {"bottom": bottom, "top": top, "current_close": current['close']},
+                    'cooldown_mult': 4
+                }
+                _prepare_and_send_notification(config, symbol, timeframe, df, signal_info)
+
+    except Exception as e:
+        logger.error(f"❌ 在 {symbol} {timeframe} (订单块交互) 中出错: {e}", exc_info=True)
 # --- END OF FILE app/analysis/strategies.py (STANDARDIZED & ARRAY-AWARE) ---

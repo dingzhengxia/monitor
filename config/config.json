@@ -138,6 +138,14 @@
         "1h"
       ]
     },
+    "order_block_interaction": {
+      "enabled": true,
+      "swing_length": 50,
+      "atr_multiplier": 0.1,
+      "alert_on_rejection": true,
+      "alert_on_breakout": true,
+      "exclude_timeframes": []
+    },
     "trend_channel_breakout": [
       {
         "name": "短期趋势通道 (1h/4h)",
