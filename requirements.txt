@@ -1,0 +1,10 @@
+ccxt==4.3.111
+loguru==0.7.2
+pandas==2.2.2
+pandas-ta==0.3.14b
+apscheduler==3.10.4
+requests==2.32.3
+plyer==2.1.0
+numpy==1.26.4
+scikit-learn==1.5.0
+scipy==1.13.1
