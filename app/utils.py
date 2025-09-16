@@ -1,7 +1,4 @@
-import json
 from datetime import datetime, timedelta, timezone
-from loguru import logger
-from app.state import alerted_states
 
 ALERT_STATUS_FILE = 'cooldown_status.json'
 

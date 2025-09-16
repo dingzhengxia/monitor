@@ -1,10 +1,8 @@
 # --- START OF FILE app/tasks/signal_scanner.py (ARRAY-AWARE) ---
-import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+
 from loguru import logger
-# 本地应用导入
-from app.state import cached_top_symbols
-from app.services.data_fetcher import fetch_ohlcv_data, get_top_n_symbols_by_volume
+
 from app.analysis.strategies import (
     check_ema_signals, check_kdj_cross, check_volatility_breakout,
     check_level_breakout, check_rsi_divergence, check_consecutive_candles,
@@ -12,6 +10,9 @@ from app.analysis.strategies import (
     check_order_block_interaction,  # <-- 新增导入
     _get_params_for_timeframe
 )
+from app.services.data_fetcher import fetch_ohlcv_data, get_top_n_symbols_by_volume
+# 本地应用导入
+from app.state import cached_top_symbols
 
 
 def _get_symbol_in_primary_market(base_symbol, config):
