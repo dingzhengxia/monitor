@@ -35,7 +35,7 @@ echo -e "${GREEN}Git 拉取完成。${NC}\n"
 echo -e "${YELLOW}Step 2/3: 正在重新构建 Docker 镜像并重启服务...${NC}"
 # 这个命令会智能地停止旧容器，构建新镜像，然后以后台模式启动新容器。
 # --remove-orphans 会移除在 docker-compose.yml 中已不存在的服务的容器。
-docker-compose up --build -d --remove-orphans
+docker compose up --build -d --remove-orphans
 echo -e "${GREEN}服务已成功构建并重启。${NC}\n"
 
 
@@ -48,5 +48,5 @@ echo -e "${GREEN}清理完成。${NC}\n"
 # --- 完成 ---
 echo -e "${GREEN}=========================================${NC}"
 echo -e "${GREEN}✅ 自动化部署流程执行完毕！${NC}"
-echo -e "${YELLOW}您可以使用 'docker-compose logs -f' 来查看程序运行日志。${NC}"
+echo -e "${YELLOW}您可以使用 'docker compose logs -f' 来查看程序运行日志。${NC}"
 echo -e "${GREEN}=========================================${NC}"
