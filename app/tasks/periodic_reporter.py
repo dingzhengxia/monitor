@@ -165,8 +165,18 @@ def run_periodic_report(exchange, config, report_conf):
             for item in final_consecutive_list:
                 message += f"💪 **{item['symbol']}**\n> **连涨: {item['candles']} 根** {'🔥' * (item['candles'] // 2) if item['candles'] > 3 else '🔥' if item['candles'] == 3 else ''}\n\n"
 
-        if message:
-            send_alert(config, title, message, "Market Report")
+        # V-- 【核心修正】: 替换了原有的发送逻辑 --V
+        # 检查是否有任何榜单生成了内容
+        has_content = any([gainers_list, consecutive_up_list, volume_ratio_list, overbought_list, oversold_list])
+
+        if not has_content:
+            # 如果没有任何榜单内容，则添加一条默认消息，表明市场平淡
+            # 这会追加在可能存在的“市场情绪”信息之后
+            message += "\n---\n\n### 😴 市场观察\n\n在本周期内未发现符合分析条件的异动资产。"
+
+        # 只要任务成功执行到这里，就发送报告
+        send_alert(config, title, message, "Market Report")
+        # ^-- 【核心修正】: 修正结束 --^
 
         logger.info(f"--- ✅ '{report_name}' 完成 ---")
     except Exception as e:
