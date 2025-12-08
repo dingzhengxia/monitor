@@ -2,17 +2,16 @@ version: '3.8'
 
 services:
   crypto-monitor:
-    # 告诉 Docker Compose 在当前目录寻找 Dockerfile 来构建镜像
     build: .
-    # 为容器设置一个友好的名称
     container_name: crypto-monitor
-    # 配置重启策略，确保程序意外退出后会自动重启
     restart: unless-stopped
-    # 挂载本地目录到容器内，实现数据持久化
+    # --- 新增部分开始 ---
+    environment:
+      - TZ=Asia/Shanghai  # 强制容器使用北京时间
+    # --- 新增部分结束 ---
     volumes:
-      # 挂载本地的 config 文件夹到容器内，这样你可以在容器外修改配置
       - ./config:/usr/src/app/config
-      # 挂载本地的 log 文件夹，方便查看程序产生的日志
       - ./log:/usr/src/app/log
-      # 挂载状态文件，确保容器重启后冷却状态不会丢失
       - ./cooldown_status.json:/usr/src/app/cooldown_status.json
+      # --- 新增部分（可选，Linux服务器推荐）---
+      - /etc/localtime:/etc/localtime:ro

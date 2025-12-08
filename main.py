@@ -103,11 +103,13 @@ def main():
 
                 if run_interval_str == '1d':
                     # 日报，在北京时间每天早上8点运行
-                    trigger = CronTrigger(hour='8', minute='0', second='10')
+                    # 关键修改：显式添加 timezone='Asia/Shanghai'
+                    trigger = CronTrigger(hour='8', minute='0', second='10', timezone='Asia/Shanghai')
                 else:  # 小时报告
                     run_interval_hours = run_interval_minutes // 60
                     trigger_hours = ",".join([str(h) for h in range(0, 24, run_interval_hours)])
-                    trigger = CronTrigger(hour=trigger_hours, minute='0', second='10')
+                    # 关键修改：显式添加 timezone='Asia/Shanghai'
+                    trigger = CronTrigger(hour=trigger_hours, minute='0', second='10', timezone='Asia/Shanghai')
 
                 scheduler.add_job(run_periodic_report,
                                   trigger,
