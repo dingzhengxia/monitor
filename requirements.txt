@@ -1,4 +1,4 @@
-ccxt==4.3.35
+ccxt>=4.5.25
 loguru==0.7.2
 pandas
 pandas-ta==0.4.71b0

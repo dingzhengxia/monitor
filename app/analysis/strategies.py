@@ -1,4 +1,4 @@
-# --- START OF FILE app/analysis/strategies.py (CORRECT, STANDARDIZED & ARRAY-AWARE) ---
+# --- START OF FILE app/analysis/strategies.py ---
 from datetime import datetime, timezone
 from loguru import logger
 import pandas as pd
@@ -7,6 +7,7 @@ import pandas_ta as pta
 from app.analysis.order_blocks import find_latest_order_blocks
 from app.state import alerted_states, save_alert_states
 from app.services.notification_service import send_alert
+from app.services.data_fetcher import fetch_funding_rate  # <--- 新增导入
 from app.analysis.trend import get_current_trend, timeframe_to_minutes
 from app.analysis.levels import find_price_interest_zones, calculate_pivot_points
 from app.analysis.channels import detect_regression_channel
@@ -52,7 +53,6 @@ def _prepare_and_send_notification(config, symbol, timeframe, df, signal_info):
         logger.trace(
             f"[{symbol}] 是白名单币种，且策略 '{signal_info.get('log_name', 'N/A')}' 配置了豁免，已豁免成交量确认。")
 
-    # 【健壮性修改】安全地获取 breakout_params，因为未来它也可能变成数组
     raw_lb_params = params.get('level_breakout', {})
     breakout_params = raw_lb_params[0] if isinstance(raw_lb_params, list) else raw_lb_params
 
@@ -72,7 +72,7 @@ def _prepare_and_send_notification(config, symbol, timeframe, df, signal_info):
     trend_status, trend_emoji = get_current_trend(df.copy(), timeframe, params)
     message_data['trend_message'] = f"**当前趋势**: {trend_emoji} {trend_status}\n\n"
 
-    if vol_text:
+    if vol_text and signal_info.get('always_show_volume', True):
         message_data['vol_text'] = f"\n---\n{vol_text}"
     else:
         message_data['vol_text'] = ""
@@ -368,12 +368,11 @@ def check_trend_channel_breakout(exchange, symbol, timeframe, config, df, channe
                 f"[{symbol}|{timeframe}] 趋势通道策略 '{channel_params.get('name', config_index)}' 缺少 'lookback_period' 参数，跳过。");
             return
 
-        # --- 核心修改 1: 提前计算ATR ---
         atr_period = 14
         df.ta.atr(length=atr_period, append=True)
         atr_col = f"ATRr_{atr_period}"
         if atr_col not in df.columns:
-            return  # 无法计算ATR则退出
+            return
 
         df_for_channel = df.copy();
         df_for_channel['symbol'] = symbol;
@@ -395,20 +394,17 @@ def check_trend_channel_breakout(exchange, symbol, timeframe, config, df, channe
 
         trend_length = channel_info['trend_length']
 
-        # --- 核心修改 2: 读取新参数并计算缓冲区 ---
-        confirmation_atr_mult = channel_params.get('breakout_confirmation_atr', 0.0)  # 默认为0，即无缓冲区
+        confirmation_atr_mult = channel_params.get('breakout_confirmation_atr', 0.0)
         current_atr = current.get(atr_col, 0)
         if pd.isna(current_atr) or current_atr == 0:
-            return  # 如果没有有效的ATR值，则无法计算缓冲区
+            return
 
         confirmation_buffer = current_atr * confirmation_atr_mult
 
         # 信号1: 突破下降趋势的回归通道 (看涨)
         if channel_info['slope'] < 0:
-            # --- 核心修改 3: 在判断条件中加入缓冲区 ---
             breakout_threshold = current_upper_band + confirmation_buffer
 
-            # 条件: 上一根K线收盘在通道内，当前K线收盘在“通道+缓冲区”之上
             is_confirmed_breakout = prev['close'] < prev_upper_band and current['close'] > breakout_threshold
 
             if is_confirmed_breakout:
@@ -433,10 +429,8 @@ def check_trend_channel_breakout(exchange, symbol, timeframe, config, df, channe
 
         # 信号2: 跌破上升趋势的回归通道 (看跌)
         elif channel_info['slope'] > 0:
-            # --- 核心修改 3: 在判断条件中加入缓冲区 ---
             breakdown_threshold = current_lower_band - confirmation_buffer
 
-            # 条件: 上一根K线收盘在通道内，当前K线收盘在“通道-缓冲区”之下
             is_confirmed_breakdown = prev['close'] > prev_lower_band and current['close'] < breakdown_threshold
 
             if is_confirmed_breakdown:
@@ -467,8 +461,6 @@ def check_consecutive_candles(exchange, symbol, timeframe, config, df, consecuti
         fallback_n = consecutive_params.get('min_consecutive_candles', 4)
         min_n_to_alert = get_dynamic_consecutive_candles(symbol, config, fallback_n)
 
-        # 【健壮性修复】: 确保有足够的K线来安全地访问 df.iloc[-2] 和 df.iloc[-3]
-        # 我们至少需要3根K线来检查反转 (current, last, prev)，所以增加一个保底检查
         if len(df) < min_n_to_alert + 2 or len(df) < 3:
             return
 
@@ -492,7 +484,6 @@ def check_consecutive_candles(exchange, symbol, timeframe, config, df, consecuti
         is_prev_up = prev_candle['close'] > prev_candle['open'];
         is_prev_down = prev_candle['close'] < prev_candle['open']
 
-        # 检查下跌趋势后的反转信号 (转为上涨)
         if is_last_up and is_prev_down:
             prev_down_trend_count = count_backwards(len(df) - 3, 'down')
             if prev_down_trend_count >= min_n_to_alert:
@@ -505,7 +496,6 @@ def check_consecutive_candles(exchange, symbol, timeframe, config, df, consecuti
                                'cooldown_logic': 'align_to_period_end', 'always_show_volume': True}
                 _prepare_and_send_notification(config, symbol, timeframe, df, signal_info)
 
-        # 检查上涨趋势后的反转信号 (转为下跌)
         elif is_last_down and is_prev_up:
             prev_up_trend_count = count_backwards(len(df) - 3, 'up')
             if prev_up_trend_count >= min_n_to_alert:
@@ -518,11 +508,9 @@ def check_consecutive_candles(exchange, symbol, timeframe, config, df, consecuti
                                'cooldown_logic': 'align_to_period_end', 'always_show_volume': True}
                 _prepare_and_send_notification(config, symbol, timeframe, df, signal_info)
 
-        # 检查趋势持续信号
         current_trend_count = 0;
         current_direction = None
 
-        # 我们只关心上一根K线(last_candle)的状态
         if is_last_up:
             current_direction = 'up';
             current_trend_count = count_backwards(len(df) - 2, 'up')
@@ -551,7 +539,6 @@ def check_consecutive_candles(exchange, symbol, timeframe, config, df, consecuti
         logger.error(f"❌ 在 {symbol} {timeframe} (无状态连续K线信号) 中出错: {e}", exc_info=True)
 
 
-# V-- 在文件末尾添加这个新的策略函数 --V
 def check_order_block_interaction(exchange, symbol, timeframe, config, df, ob_params, config_index=0):
     try:
         swing_length = ob_params.get('swing_length', 10)
@@ -564,16 +551,14 @@ def check_order_block_interaction(exchange, symbol, timeframe, config, df, ob_pa
         current = df.iloc[-1]
         prev = df.iloc[-2]
 
-        # 检查与最新熊市订单块(阻力区)的交互
         if bear_ob:
             top, bottom = bear_ob['top'], bear_ob['bottom']
-            # 信号: 价格进入阻力区 (测试/拒绝)
             if ob_params.get('alert_on_rejection', True) and \
                     prev['close'] < bottom and current['close'] >= bottom and current['close'] <= top:
                 signal_info = {
                     'log_name': 'OrderBlock Rejection',
                     'alert_key': f"{symbol}_{timeframe}_OB_REJECT_BEAR_{bear_ob['timestamp']}",
-                    'volume_must_confirm': False,  # 通常OB交互不强制要求成交量
+                    'volume_must_confirm': False,
                     'title_template': f"⚠️ {symbol} ({timeframe}) 测试关键阻力区",
                     'message_template': ("{trend_message}**信号**: 价格已进入由前期市场结构形成的**熊市订单块(阻力区)**。\n\n"
                                          "> **阻力区间**: `{bottom:.4f} - {top:.4f}`\n"
@@ -586,12 +571,11 @@ def check_order_block_interaction(exchange, symbol, timeframe, config, df, ob_pa
                 }
                 _prepare_and_send_notification(config, symbol, timeframe, df, signal_info)
 
-            # 信号: 价格突破阻力区
             if ob_params.get('alert_on_breakout', False) and prev['close'] < top and current['close'] > top:
                 signal_info = {
                     'log_name': 'OrderBlock Breakout',
                     'alert_key': f"{symbol}_{timeframe}_OB_BREAK_BEAR_{bear_ob['timestamp']}",
-                    'volume_must_confirm': True,  # 突破最好有成交量确认
+                    'volume_must_confirm': True,
                     'fallback_multiplier': 1.8,
                     'title_template': f"🚀 {{vol_label}}突破关键阻力: {symbol} ({timeframe})",
                     'message_template': ("{trend_message}**信号**: 价格**已突破**前期关键的**熊市订单块(阻力区)**。\n\n"
@@ -604,10 +588,8 @@ def check_order_block_interaction(exchange, symbol, timeframe, config, df, ob_pa
                 }
                 _prepare_and_send_notification(config, symbol, timeframe, df, signal_info)
 
-        # 检查与最新牛市订单块(支撑区)的交互
         if bull_ob:
             top, bottom = bull_ob['top'], bull_ob['bottom']
-            # 信号: 价格进入支撑区 (测试/支撑)
             if ob_params.get('alert_on_rejection', True) and \
                     prev['close'] > top and current['close'] <= top and current['close'] >= bottom:
                 signal_info = {
@@ -626,7 +608,6 @@ def check_order_block_interaction(exchange, symbol, timeframe, config, df, ob_pa
                 }
                 _prepare_and_send_notification(config, symbol, timeframe, df, signal_info)
 
-            # 信号: 价格跌破支撑区
             if ob_params.get('alert_on_breakout', False) and prev['close'] > bottom and current['close'] < bottom:
                 signal_info = {
                     'log_name': 'OrderBlock Breakdown',
@@ -646,4 +627,68 @@ def check_order_block_interaction(exchange, symbol, timeframe, config, df, ob_pa
 
     except Exception as e:
         logger.error(f"❌ 在 {symbol} {timeframe} (订单块交互) 中出错: {e}", exc_info=True)
-# --- END OF FILE app/analysis/strategies.py (STANDARDIZED & ARRAY-AWARE) ---
+
+
+def check_high_funding_rate(exchange, symbol, timeframe, config, df, fund_params, config_index=0):
+    """
+    监控资金费率是否异常（超过阈值）。
+    """
+    try:
+        threshold = fund_params.get('threshold', 0.01)
+
+        funding_data = fetch_funding_rate(exchange, symbol)
+        if not funding_data:
+            return
+
+        current_rate = funding_data.get('fundingRate')
+        if current_rate is None:
+            return
+
+        if abs(current_rate) >= threshold:
+            rate_percent = current_rate * 100
+
+            if current_rate > 0:
+                direction_str = "多头支付空头 (费率极高)"
+                sentiment = "🔥 极度看涨/过热"
+                color_emoji = "🔴"
+            else:
+                direction_str = "空头支付多头 (费率极低)"
+                sentiment = "🥶 极度看跌/逼空风险"
+                color_emoji = "🟢"
+
+            next_fund_time_str = "N/A"
+            if funding_data.get('nextFundingTimestamp'):
+                next_fund_dt = datetime.fromtimestamp(funding_data['nextFundingTimestamp'] / 1000, tz=timezone.utc)
+                next_fund_time_str = next_fund_dt.strftime('%H:%M UTC')
+
+            signal_info = {
+                'log_name': 'High Funding Rate',
+                # 使用不带时间戳的 Alert Key 确保冷却生效
+                'alert_key': f"{symbol}_FUNDING_RATE_{config_index}",
+                'volume_must_confirm': False,
+                'title_template': f"{color_emoji} 资金费率告警: {symbol} 达 {rate_percent:.3f}%",
+                'message_template': (
+                    "{trend_message}**信号**: **资金费率异常** ( > {threshold_pct}% )。\n\n"
+                    "> **当前费率**: `{rate_percent:.4f}%`\n"
+                    "> **市场状态**: {sentiment}\n"
+                    "> **资金流向**: {direction_str}\n"
+                    "> **结算时间**: {next_fund_time}\n\n"
+                    "⚠️ 高额资金费率通常意味着市场极其拥挤，可能面临剧烈的**清洗或反转**。"
+                ),
+                'template_data': {
+                    "threshold_pct": threshold * 100,
+                    "rate_percent": rate_percent,
+                    "sentiment": sentiment,
+                    "direction_str": direction_str,
+                    "next_fund_time": next_fund_time_str
+                },
+                # 从配置读取冷却倍数，默认4倍
+                'cooldown_mult': fund_params.get('cooldown_mult', 4),
+                'always_show_volume': False
+            }
+
+            _prepare_and_send_notification(config, symbol, timeframe, df, signal_info)
+
+    except Exception as e:
+        logger.error(f"❌ 在 {symbol} (资金费率监控) 中出错: {e}", exc_info=True)
+# --- END OF FILE app/analysis/strategies.py ---

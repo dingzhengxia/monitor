@@ -146,6 +146,17 @@
       "alert_on_breakout": true,
       "exclude_timeframes": []
     },
+    "high_funding_rate": {
+      "enabled": true,
+      "threshold": 0.01,
+      "cooldown_mult": 2,
+      "scan_top_n": 500,
+      "exclude_timeframes": [
+        "15m",
+        "1h",
+        "1d"
+      ]
+    },
     "trend_channel_breakout": [
       {
         "name": "短期趋势通道 (1h/4h)",

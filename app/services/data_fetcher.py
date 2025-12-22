@@ -29,6 +29,23 @@ def fetch_fear_greed_index():
     return None
 
 
+def fetch_funding_rate(exchange, symbol):
+    """
+    获取指定交易对的当前资金费率
+    """
+    try:
+        # 大多数交易所 (Binance, OKX, Bybit) 都支持此方法
+        funding_info = exchange.fetch_funding_rate(symbol)
+        return funding_info
+    except AttributeError:
+        # 如果交易所不支持 fetch_funding_rate (较少见)
+        logger.debug(f"交易所不支持 fetch_funding_rate: {symbol}")
+        return None
+    except Exception as e:
+        logger.debug(f"获取资金费率失败 {symbol}: {e}")
+        return None
+
+
 def get_top_n_symbols_by_volume(exchange, top_n=100, exclude_list=[], market_type='swap', retries=5, config=None,
                                 ignore_adv_filters=False):
     scan_conf = config.get('market_settings', {}).get('dynamic_scan', {}) if config else {}
