@@ -40,42 +40,50 @@ def _prepare_and_send_notification(config, symbol, timeframe, df, signal_info):
     if alerted_states.get(alert_key) and now_utc < alerted_states[alert_key]:
         return
 
-    static_bases = market_settings.get('static_symbols', [])
-    symbol_base = symbol.split('/')[0].split(':')[0]
-    is_static_symbol = symbol_base in static_bases
+    # --- 1. 处理静态白名单豁免逻辑 (如果 df 存在才处理成交量) ---
+    vol_text = ""
+    volume_label = ""
 
-    exemption_enabled_for_this_strategy = signal_info.get('exempt_static_on_volume', False)
-    original_volume_confirm = signal_info.get('volume_must_confirm', False)
-    final_volume_confirm = False if (
-            exemption_enabled_for_this_strategy and is_static_symbol) else original_volume_confirm
+    # 只有当 df 存在时，才进行成交量分析和趋势分析
+    if df is not None:
+        static_bases = market_settings.get('static_symbols', [])
+        symbol_base = symbol.split('/')[0].split(':')[0]
+        is_static_symbol = symbol_base in static_bases
 
-    if exemption_enabled_for_this_strategy and is_static_symbol and original_volume_confirm:
-        logger.trace(
-            f"[{symbol}] 是白名单币种，且策略 '{signal_info.get('log_name', 'N/A')}' 配置了豁免，已豁免成交量确认。")
+        exemption_enabled_for_this_strategy = signal_info.get('exempt_static_on_volume', False)
+        original_volume_confirm = signal_info.get('volume_must_confirm', False)
+        final_volume_confirm = False if (
+                exemption_enabled_for_this_strategy and is_static_symbol) else original_volume_confirm
 
-    raw_lb_params = params.get('level_breakout', {})
-    breakout_params = raw_lb_params[0] if isinstance(raw_lb_params, list) else raw_lb_params
+        raw_lb_params = params.get('level_breakout', {})
+        breakout_params = raw_lb_params[0] if isinstance(raw_lb_params, list) else raw_lb_params
 
-    dynamic_multiplier = get_dynamic_volume_multiplier(symbol, config, signal_info.get('fallback_multiplier', 1.5))
-    is_vol_over, vol_text, actual_vol_ratio = is_realtime_volume_over(
-        df, tf_minutes, breakout_params.get('volume_ma_period', 20), dynamic_multiplier
-    )
+        dynamic_multiplier = get_dynamic_volume_multiplier(symbol, config, signal_info.get('fallback_multiplier', 1.5))
+        is_vol_over, v_text, actual_vol_ratio = is_realtime_volume_over(
+            df, tf_minutes, breakout_params.get('volume_ma_period', 20), dynamic_multiplier
+        )
 
-    if final_volume_confirm and not is_vol_over:
-        logger.debug(f"[{symbol}|{timeframe}] 信号 '{signal_info.get('log_name', 'N/A')}' 因成交量不足被过滤。")
-        return
+        if final_volume_confirm and not is_vol_over:
+            logger.debug(f"[{symbol}|{timeframe}] 信号 '{signal_info.get('log_name', 'N/A')}' 因成交量不足被过滤。")
+            return
 
-    volume_label = f"放量({actual_vol_ratio:.1f}x) " if is_vol_over else f"缩量({actual_vol_ratio:.1f}x) "
+        volume_label = f"放量({actual_vol_ratio:.1f}x) " if is_vol_over else f"缩量({actual_vol_ratio:.1f}x) "
+        if v_text and signal_info.get('always_show_volume', True):
+            vol_text = f"\n---\n{v_text}"
+
+        # 计算趋势
+        trend_status, trend_emoji = get_current_trend(df.copy(), timeframe, params)
+    else:
+        # 如果没有 df (例如资金费率扫描)，给默认值
+        trend_status, trend_emoji = "趋势未知", "📊"
+        vol_text = ""
+        volume_label = ""
+
     title = signal_info['title_template'].format(vol_label=volume_label).replace("  ", " ").strip()
 
     message_data = signal_info.get('template_data', {})
-    trend_status, trend_emoji = get_current_trend(df.copy(), timeframe, params)
     message_data['trend_message'] = f"**当前趋势**: {trend_emoji} {trend_status}\n\n"
-
-    if vol_text and signal_info.get('always_show_volume', True):
-        message_data['vol_text'] = f"\n---\n{vol_text}"
-    else:
-        message_data['vol_text'] = ""
+    message_data['vol_text'] = vol_text
 
     message = signal_info['message_template'].format(**message_data)
 
