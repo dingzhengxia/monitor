@@ -14,10 +14,11 @@
     ],
     "static_symbols": [
       "BTC",
-      "ETH"
+      "ETH",
+      "BNB"
     ],
     "dynamic_scan": {
-      "enabled": true,
+      "enabled": false,
       "top_n_for_signals": 100,
       "primary_quote_currency": "USDT",
       "cross_market_filter": {
@@ -105,7 +106,7 @@
       "exclude_timeframes": []
     },
     "level_breakout": {
-      "enabled": false,
+      "enabled": true,
       "volume_confirm": true,
       "exempt_static_on_volume": false,
       "volume_multiplier": 1.5,
@@ -113,15 +114,15 @@
         "method": "advanced",
         "clustering": {
           "enabled": true,
-          "atr_grouping_multiplier": 1,
-          "min_cluster_size": 3,
-          "min_separation_atr_mult": 1.1
+          "atr_grouping_multiplier": 1.0,
+          "min_cluster_size": 4,
+          "min_separation_atr_mult": 2.0
         },
         "static_pivots": {
-          "enabled": true
+          "enabled": false
         },
         "rolling_pivots": {
-          "enabled": true
+          "enabled": false
         }
       },
       "breakout_period": 120,
