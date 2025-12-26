@@ -1,4 +1,4 @@
-# --- START OF FILE app/analysis/strategies.py ---
+# --- START OF FILE app/analysis/strategies.py (WITH FUNDING INTERVAL LOGIC) ---
 from datetime import datetime, timezone
 from loguru import logger
 import pandas as pd
@@ -7,7 +7,7 @@ import pandas_ta as pta
 from app.analysis.order_blocks import find_latest_order_blocks
 from app.state import alerted_states, save_alert_states
 from app.services.notification_service import send_alert
-from app.services.data_fetcher import fetch_funding_rate  # <--- 新增导入
+from app.services.data_fetcher import fetch_funding_rate
 from app.analysis.trend import get_current_trend, timeframe_to_minutes
 from app.analysis.levels import find_price_interest_zones, calculate_pivot_points
 from app.analysis.channels import detect_regression_channel
@@ -19,10 +19,6 @@ from app.utils import calculate_cooldown_time
 
 
 def _get_params_for_timeframe(base_params: dict, timeframe: str) -> dict:
-    """
-    一个辅助函数，用于获取特定时间周期的策略参数。
-    它会加载基础参数，然后用该时间周期的特定覆盖参数来更新它们。
-    """
     final_params = base_params.copy()
     overrides = base_params.get("overrides_by_timeframe", {})
     if timeframe in overrides:
@@ -40,11 +36,11 @@ def _prepare_and_send_notification(config, symbol, timeframe, df, signal_info):
     if alerted_states.get(alert_key) and now_utc < alerted_states[alert_key]:
         return
 
-    # --- 1. 处理静态白名单豁免逻辑 (如果 df 存在才处理成交量) ---
+    # --- 逻辑修复: 兼容 df 为 None 的情况 (资金费率扫描模式) ---
     vol_text = ""
     volume_label = ""
+    trend_status, trend_emoji = "趋势未知", "📊"
 
-    # 只有当 df 存在时，才进行成交量分析和趋势分析
     if df is not None:
         static_bases = market_settings.get('static_symbols', [])
         symbol_base = symbol.split('/')[0].split(':')[0]
@@ -55,6 +51,7 @@ def _prepare_and_send_notification(config, symbol, timeframe, df, signal_info):
         final_volume_confirm = False if (
                 exemption_enabled_for_this_strategy and is_static_symbol) else original_volume_confirm
 
+        # 获取 Breakout 参数用于计算成交量均线
         raw_lb_params = params.get('level_breakout', {})
         breakout_params = raw_lb_params[0] if isinstance(raw_lb_params, list) else raw_lb_params
 
@@ -71,13 +68,8 @@ def _prepare_and_send_notification(config, symbol, timeframe, df, signal_info):
         if v_text and signal_info.get('always_show_volume', True):
             vol_text = f"\n---\n{v_text}"
 
-        # 计算趋势
+        # 只有有K线数据时才计算趋势
         trend_status, trend_emoji = get_current_trend(df.copy(), timeframe, params)
-    else:
-        # 如果没有 df (例如资金费率扫描)，给默认值
-        trend_status, trend_emoji = "趋势未知", "📊"
-        vol_text = ""
-        volume_label = ""
 
     title = signal_info['title_template'].format(vol_label=volume_label).replace("  ", " ").strip()
 
@@ -639,11 +631,10 @@ def check_order_block_interaction(exchange, symbol, timeframe, config, df, ob_pa
 
 def check_high_funding_rate(exchange, symbol, timeframe, config, df, fund_params, config_index=0):
     """
-    监控资金费率是否异常（超过阈值）。
+    监控资金费率是否异常。
+    支持【动态周期加权】逻辑: 周期越短，报警阈值越低。
     """
     try:
-        threshold = fund_params.get('threshold', 0.01)
-
         funding_data = fetch_funding_rate(exchange, symbol)
         if not funding_data:
             return
@@ -652,9 +643,32 @@ def check_high_funding_rate(exchange, symbol, timeframe, config, df, fund_params
         if current_rate is None:
             return
 
-        if abs(current_rate) >= threshold:
+        # 1. 确定结算周期 (小时)
+        interval_hours = 8  # 行业标准默认是8小时
+
+        # 尝试从原始 info 中获取 (Binance 特有字段)
+        if 'info' in funding_data:
+            if 'fundingIntervalHours' in funding_data['info']:
+                interval_hours = int(funding_data['info']['fundingIntervalHours'])
+
+        # 2. 计算动态阈值
+        # 用户的逻辑: "每4小时必须达到配置标准...每小时只需要/4"
+        # 这意味着 config.json 里的 threshold 是以 【4小时】 为基准的
+        baseline_hours = 4
+
+        # 动态调整公式: 实际阈值 = 配置阈值 * (当前周期 / 基准周期)
+        # 例如: 配置 1% (0.01)
+        # - 如果周期是 1h: 0.01 * (1/4) = 0.0025 (0.25%)
+        # - 如果周期是 4h: 0.01 * (4/4) = 0.01 (1%)
+        # - 如果周期是 8h: 0.01 * (8/4) = 0.02 (2%)
+
+        config_threshold = fund_params.get('threshold', 0.01)
+        dynamic_threshold = config_threshold * (interval_hours / baseline_hours)
+
+        if abs(current_rate) >= dynamic_threshold:
             rate_percent = current_rate * 100
 
+            # 判断方向
             if current_rate > 0:
                 direction_str = "多头支付空头 (费率极高)"
                 sentiment = "🔥 极度看涨/过热"
@@ -669,6 +683,11 @@ def check_high_funding_rate(exchange, symbol, timeframe, config, df, fund_params
                 next_fund_dt = datetime.fromtimestamp(funding_data['nextFundingTimestamp'] / 1000, tz=timezone.utc)
                 next_fund_time_str = next_fund_dt.strftime('%H:%M UTC')
 
+            # 动态生成一条说明，让用户知道为什么报警
+            threshold_reason = ""
+            if interval_hours != 4:
+                threshold_reason = f"(注: 结算周期为{interval_hours}h，阈值已自动调整为 {dynamic_threshold * 100:.3f}%)"
+
             signal_info = {
                 'log_name': 'High Funding Rate',
                 # 使用不带时间戳的 Alert Key 确保冷却生效
@@ -676,19 +695,21 @@ def check_high_funding_rate(exchange, symbol, timeframe, config, df, fund_params
                 'volume_must_confirm': False,
                 'title_template': f"{color_emoji} 资金费率告警: {symbol} 达 {rate_percent:.3f}%",
                 'message_template': (
-                    "{trend_message}**信号**: **资金费率异常** ( > {threshold_pct}% )。\n\n"
+                    "{trend_message}**信号**: **资金费率异常**。\n\n"
                     "> **当前费率**: `{rate_percent:.4f}%`\n"
+                    "> **结算周期**: {interval_hours}小时\n"
                     "> **市场状态**: {sentiment}\n"
                     "> **资金流向**: {direction_str}\n"
                     "> **结算时间**: {next_fund_time}\n\n"
-                    "⚠️ 高额资金费率通常意味着市场极其拥挤，可能面临剧烈的**清洗或反转**。"
+                    "⚠️ {reason}"
                 ),
                 'template_data': {
-                    "threshold_pct": threshold * 100,
                     "rate_percent": rate_percent,
                     "sentiment": sentiment,
                     "direction_str": direction_str,
-                    "next_fund_time": next_fund_time_str
+                    "next_fund_time": next_fund_time_str,
+                    "interval_hours": interval_hours,
+                    "reason": threshold_reason
                 },
                 # 从配置读取冷却倍数，默认4倍
                 'cooldown_mult': fund_params.get('cooldown_mult', 4),
@@ -699,4 +720,4 @@ def check_high_funding_rate(exchange, symbol, timeframe, config, df, fund_params
 
     except Exception as e:
         logger.error(f"❌ 在 {symbol} (资金费率监控) 中出错: {e}", exc_info=True)
-# --- END OF FILE app/analysis/strategies.py ---
+# --- END OF FILE app/analysis/strategies.py (WITH FUNDING INTERVAL LOGIC) ---
