@@ -1,19 +1,7 @@
 #!/bin/bash
 
 # ==============================================================================
-#  Crypto Monitor - 自动化部署脚本
-# ==============================================================================
-#
-# 功能:
-# 1. 从 Git 拉取最新代码。
-# 2. 使用 docker-compose 重新构建并以分离模式启动服务。
-# 3. 清理无用的 Docker 镜像。
-#
-# 使用方法:
-# 1. 将此脚本放置在 docker-compose.yml 文件所在的目录。
-# 2. 授予执行权限: chmod +x deploy.sh
-# 3. 运行脚本: ./deploy.sh
-#
+#  Crypto Monitor - 自动化部署脚本 (已修复 Docker 挂载 Bug)
 # ==============================================================================
 
 # 设置颜色变量，方便输出
@@ -30,20 +18,30 @@ echo -e "\n${YELLOW}Step 1/3: 正在从 Git 拉取最新代码...${NC}"
 git pull
 echo -e "${GREEN}Git 拉取完成。${NC}\n"
 
+# --- 步骤 1.5: 环境准备 (修复 Docker 自动创建目录的问题) ---
+echo -e "${YELLOW}Step 1.5/3: 正在准备持久化状态文件...${NC}"
+# 1. 如果发现是一个文件夹，删除它
+if [ -d "cooldown_status.json" ]; then
+    echo -e "${RED}⚠️ 发现被 Docker 错误创建的 cooldown_status.json 文件夹，正在删除...${NC}"
+    rm -rf cooldown_status.json
+fi
+
+# 2. 如果文件不存在，主动创建一个合法的空 JSON 文件
+if [ ! -f "cooldown_status.json" ]; then
+    echo -e "${GREEN}✨ 初始化空的 cooldown_status.json 文件...${NC}"
+    echo "{}" > cooldown_status.json
+fi
+echo -e "${GREEN}状态文件准备完毕。${NC}\n"
 
 # --- 步骤 2: 重构并重启 Docker 服务 ---
 echo -e "${YELLOW}Step 2/3: 正在重新构建 Docker 镜像并重启服务...${NC}"
-# 这个命令会智能地停止旧容器，构建新镜像，然后以后台模式启动新容器。
-# --remove-orphans 会移除在 docker-compose.yml 中已不存在的服务的容器。
 docker compose up --build -d --remove-orphans
 echo -e "${GREEN}服务已成功构建并重启。${NC}\n"
-
 
 # --- 步骤 3: 清理旧的 Docker 镜像 ---
 echo -e "${YELLOW}Step 3/3: 正在清理旧的、未使用的 Docker 镜像...${NC}"
 docker image prune -f
 echo -e "${GREEN}清理完成。${NC}\n"
-
 
 # --- 完成 ---
 echo -e "${GREEN}=========================================${NC}"
