@@ -125,17 +125,16 @@
       "volume_multiplier": 1.5,
       "level_detection": {
         "method": "advanced",
-        "clustering": {
+        "swing_pivots": {
           "enabled": true,
-          "atr_grouping_multiplier": 1.0,
-          "min_cluster_size": 4,
-          "min_separation_atr_mult": 2.0
+          "left_bars": 7,
+          "right_bars": 7
         },
-        "static_pivots": {
+        "clustering": {
           "enabled": false
         },
         "rolling_pivots": {
-          "enabled": false
+          "enabled": true
         }
       },
       "breakout_period": 120,
@@ -147,11 +146,10 @@
         "1d": {
           "level_detection": {
             "method": "advanced",
-            "clustering": {
+            "swing_pivots": {
               "enabled": true,
-              "atr_grouping_multiplier": 1.5,
-              "min_cluster_size": 2,
-              "min_separation_atr_mult": 2.0
+              "left_bars": 3,
+              "right_bars": 3
             }
           }
         }

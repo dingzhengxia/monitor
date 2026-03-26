@@ -1,4 +1,4 @@
-# --- START OF FILE app/analysis/levels.py (OPTIMIZED V2) ---
+# --- START OF FILE app/analysis/levels.py ---
 import numpy as np
 import pandas as pd
 from sklearn.cluster import DBSCAN
@@ -26,15 +26,13 @@ def calculate_pivot_points(daily_ohlc):
 
 def _merge_close_levels(zones, min_separation):
     """
-    【新增】后处理函数：合并或剔除距离过近的层级。
+    后处理函数：合并或剔除距离过近的层级。
     优先保留强度 (touch_count) 更大的层级。
     """
     if not zones:
         return []
 
-    # 按强度 (touch_count) 从大到小排序，优先保留强的
     sorted_zones = sorted(zones, key=lambda x: x['strength'], reverse=True)
-
     final_zones = []
 
     for zone in sorted_zones:
@@ -47,21 +45,16 @@ def _merge_close_levels(zones, min_separation):
         if not is_too_close:
             final_zones.append(zone)
 
-    # 最后按价格重新排序方便阅读
     return sorted(final_zones, key=lambda x: x['level'], reverse=True)
 
 
 def find_price_interest_zones(df, atr_grouping_multiplier=1.0, min_cluster_size=3, min_separation_atr_mult=1.5):
     """
-    【升级版】识别价格兴趣区
-    1. 识别分形拐点
-    2. DBSCAN 聚类
-    3. 强行去重 (剔除过近的层级)
+    识别价格兴趣区 (DBSCAN 聚类)
     """
     if len(df) < 50:
         return []
 
-    # 1. 计算ATR
     atr_period = 14
     df.ta.atr(length=atr_period, append=True)
     atr_col = f"ATRr_{atr_period}"
@@ -75,8 +68,6 @@ def find_price_interest_zones(df, atr_grouping_multiplier=1.0, min_cluster_size=
     if pd.isna(avg_atr) or avg_atr == 0:
         return []
 
-    # 2. 识别分形 (Fractals) - 也就是顶底拐点
-    # 使用 5 根 K 线判定一个拐点 (前2后2)
     period = 2
     is_fractal_high = df['high'].rolling(window=2 * period + 1, center=True).max() == df['high']
     is_fractal_low = df['low'].rolling(window=2 * period + 1, center=True).min() == df['low']
@@ -89,8 +80,6 @@ def find_price_interest_zones(df, atr_grouping_multiplier=1.0, min_cluster_size=
     if all_fractals.shape[0] < min_cluster_size:
         return []
 
-    # 3. DBSCAN 聚类
-    # eps: 两个点被视为“邻居”的最大距离。这里用 ATR 的倍数。
     eps = avg_atr * atr_grouping_multiplier
 
     try:
@@ -105,16 +94,12 @@ def find_price_interest_zones(df, atr_grouping_multiplier=1.0, min_cluster_size=
     raw_zones = []
 
     for k in unique_labels:
-        # -1 代表噪声点，忽略
-        if k == -1:
-            continue
+        if k == -1: continue
 
         class_member_mask = (labels == k)
         cluster_points = all_fractals[class_member_mask]
 
-        # 区域的核心价格 = 聚类点的平均值
         zone_level = np.mean(cluster_points)
-        # 区域的强度 = 包含的点数 (触碰次数)
         strength = len(cluster_points)
 
         raw_zones.append({
@@ -123,11 +108,49 @@ def find_price_interest_zones(df, atr_grouping_multiplier=1.0, min_cluster_size=
             'type': f'Zone ({strength} touches)'
         })
 
-    # 4. 后处理：强行合并太近的层级
-    # 定义“太近”的标准：这里用 min_separation_atr_mult * 当前ATR
     separation_dist = current_atr * min_separation_atr_mult
-
     final_zones = _merge_close_levels(raw_zones, separation_dist)
 
     return final_zones
-# --- END OF FILE app/analysis/levels.py (OPTIMIZED V2) ---
+
+
+def find_market_structure_swings(df, left_bars=7, right_bars=7):
+    """
+    【实战交易级】寻找近期的波段高点(Swing High)和波段低点(Swing Low)。
+    这就是交易员常说的“前高”和“前低”。突破它们构成 BOS (Break of Structure)。
+    """
+    if len(df) < left_bars + right_bars + 1:
+        return []
+
+    df_copy = df.copy()
+
+    # 寻找波段高点 (Swing Highs)
+    df_copy['is_swing_high'] = df_copy['high'] == df_copy['high'].rolling(window=left_bars + right_bars + 1,
+                                                                          center=True).max()
+
+    # 寻找波段低点 (Swing Lows)
+    df_copy['is_swing_low'] = df_copy['low'] == df_copy['low'].rolling(window=left_bars + right_bars + 1,
+                                                                       center=True).min()
+
+    swing_levels = []
+
+    # 提取最近的波段高点
+    swing_highs = df_copy[df_copy['is_swing_high']].tail(5)
+    for idx, row in swing_highs.iterrows():
+        swing_levels.append({
+            'level': row['high'],
+            'type': '近期前高(Swing High)',
+            'timestamp': row['timestamp']
+        })
+
+    # 提取最近的波段低点
+    swing_lows = df_copy[df_copy['is_swing_low']].tail(5)
+    for idx, row in swing_lows.iterrows():
+        swing_levels.append({
+            'level': row['low'],
+            'type': '近期前低(Swing Low)',
+            'timestamp': row['timestamp']
+        })
+
+    return swing_levels
+# --- END OF FILE app/analysis/levels.py ---
