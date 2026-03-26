@@ -1,4 +1,4 @@
-# --- START OF FILE app/analysis/strategies.py (WITH FUNDING INTERVAL LOGIC) ---
+# --- START OF FILE app/analysis/strategies.py ---
 from datetime import datetime, timezone
 from loguru import logger
 import pandas as pd
@@ -36,7 +36,6 @@ def _prepare_and_send_notification(config, symbol, timeframe, df, signal_info):
     if alerted_states.get(alert_key) and now_utc < alerted_states[alert_key]:
         return
 
-    # --- 逻辑修复: 兼容 df 为 None 的情况 (资金费率扫描模式) ---
     vol_text = ""
     volume_label = ""
     trend_status, trend_emoji = "趋势未知", "📊"
@@ -51,7 +50,6 @@ def _prepare_and_send_notification(config, symbol, timeframe, df, signal_info):
         final_volume_confirm = False if (
                 exemption_enabled_for_this_strategy and is_static_symbol) else original_volume_confirm
 
-        # 获取 Breakout 参数用于计算成交量均线
         raw_lb_params = params.get('level_breakout', {})
         breakout_params = raw_lb_params[0] if isinstance(raw_lb_params, list) else raw_lb_params
 
@@ -68,7 +66,6 @@ def _prepare_and_send_notification(config, symbol, timeframe, df, signal_info):
         if v_text and signal_info.get('always_show_volume', True):
             vol_text = f"\n---\n{v_text}"
 
-        # 只有有K线数据时才计算趋势
         trend_status, trend_emoji = get_current_trend(df.copy(), timeframe, params)
 
     title = signal_info['title_template'].format(vol_label=volume_label).replace("  ", " ").strip()
@@ -88,6 +85,82 @@ def _prepare_and_send_notification(config, symbol, timeframe, df, signal_info):
         alerted_states[alert_key] = calculate_cooldown_time(cooldown_minutes)
 
     save_alert_states()
+
+
+def check_ma_breakout(exchange, symbol, timeframe, config, df, ma_params, config_index=0):
+    """
+    监控价格是否突破或跌破指定的 MA (移动平均线) 集合。
+    支持配置任意周期的均线 (如 7, 25, 99)。
+    """
+    try:
+        ma_periods = ma_params.get('ma_periods', [7, 25, 99])
+        ma_type = ma_params.get('ma_type', 'sma').lower()
+
+        for period in ma_periods:
+            col_name = f"{ma_type}_{period}"
+            if ma_type == 'ema':
+                df[col_name] = pta.ema(df['close'], length=period)
+            else:
+                df[col_name] = pta.sma(df['close'], length=period)
+
+        df_cleaned = df.dropna().reset_index(drop=True)
+        if len(df_cleaned) < 2:
+            return
+
+        current = df_cleaned.iloc[-1]
+        prev = df_cleaned.iloc[-2]
+
+        # V--- 新增：输出当前算出的 MA 数值到日志 ---V
+        ma_log_list = []
+        for period in ma_periods:
+            col_name = f"{ma_type}_{period}"
+            if col_name in current:
+                ma_log_list.append(f"{ma_type.upper()}{period}: {current[col_name]:.4f}")
+        if ma_log_list:
+            logger.debug(
+                f"[{symbol}|{timeframe}] 📈 均线计算完毕 -> 当前价: {current['close']:.4f} | 均线: {', '.join(ma_log_list)}")
+        # ^--------------------------------------^
+
+        for period in ma_periods:
+            col_name = f"{ma_type}_{period}"
+            if col_name not in current:
+                continue
+
+            ma_val = current[col_name]
+            prev_ma_val = prev[col_name]
+
+            bullish = prev['close'] < prev_ma_val and current['close'] > ma_val
+            bearish = prev['close'] > prev_ma_val and current['close'] < ma_val
+
+            if bullish or bearish:
+                action = "突破" if bullish else "跌破"
+                emoji = "🚀" if bullish else "📉"
+
+                signal_info = {
+                    'log_name': f'MA Breakout ({period})',
+                    'alert_key': f"{symbol}_{timeframe}_MA_{action}_{period}_{config_index}",
+                    'volume_must_confirm': ma_params.get('volume_confirm', True),
+                    'fallback_multiplier': ma_params.get('volume_multiplier', 1.5),
+                    'title_template': f"{emoji} {{vol_label}}{action} {ma_type.upper()}{period}: {symbol} ({timeframe})",
+                    'message_template': (
+                        "{trend_message}**信号**: 价格实时 **{action}** {ma_type.upper()}({period}) 均线。\n\n"
+                        "> **当前价**: `{current_close:.4f}`\n"
+                        "> **均线值**: `{ma_value:.4f}`\n\n"
+                        "{vol_text}"
+                    ),
+                    'template_data': {
+                        "action": action,
+                        "period": period,
+                        "ma_type": ma_type.upper(),
+                        "current_close": current['close'],
+                        "ma_value": ma_val
+                    },
+                    'cooldown_mult': 1
+                }
+                _prepare_and_send_notification(config, symbol, timeframe, df, signal_info)
+
+    except Exception as e:
+        logger.error(f"❌ 在 {symbol} {timeframe} (MA突破监控) 中出错: {e}", exc_info=True)
 
 
 def check_ema_signals(exchange, symbol, timeframe, config, df, ema_params, config_index=0):
@@ -268,15 +341,26 @@ def check_level_breakout(exchange, symbol, timeframe, config, df, breakout_param
                     for s in rolling_supports: s['type'] = f"{prefix}-{s['type']}"
                     all_levels.extend(rolling_resistances)
                     all_levels.extend(rolling_supports)
+
         if not all_levels: return
         prev_price = prev['close']
         resistances = sorted([lvl for lvl in all_levels if lvl['level'] > prev_price], key=lambda x: x['level'])
         supports = sorted([lvl for lvl in all_levels if lvl['level'] < prev_price], key=lambda x: x['level'],
                           reverse=True)
+
+        # V--- 新增：输出计算出的水平位到日志 (限制最多打印前3个最近的) ---V
+        if resistances or supports:
+            res_str = ", ".join([f"{r['level']:.4f}({r.get('type', 'N/A')})" for r in resistances[:3]])
+            sup_str = ", ".join([f"{s['level']:.4f}({s.get('type', 'N/A')})" for s in supports[:3]])
+            logger.debug(
+                f"[{symbol}|{timeframe}] 🎯 水平位计算完毕 -> 当前价: {current['close']:.4f} | 上方阻力: [{res_str}] | 下方支撑: [{sup_str}]")
+        # ^-------------------------------------------------------------^
+
         atr_val = current.get(f"ATRr_{breakout_params.get('atr_period', 14)}", 0.0)
         if atr_val == 0: return
         atr_break_multiplier = breakout_params.get('atr_multiplier_breakout', 0.1)
         atr_break_buffer = atr_val * atr_break_multiplier
+
         if resistances:
             closest_res = resistances[0]
             cond1 = prev['close'] < closest_res['level']
@@ -545,6 +629,14 @@ def check_order_block_interaction(exchange, symbol, timeframe, config, df, ob_pa
         atr_multiplier = ob_params.get('atr_multiplier', 0.1)
         bull_ob, bear_ob = find_latest_order_blocks(df.copy(), swing_length, atr_multiplier)
 
+        # V--- 新增：输出订单块到日志 ---V
+        bear_str = f"{bear_ob['bottom']:.4f} - {bear_ob['top']:.4f}" if bear_ob else "无"
+        bull_str = f"{bull_ob['bottom']:.4f} - {bull_ob['top']:.4f}" if bull_ob else "无"
+        if bear_ob or bull_ob:
+            logger.debug(
+                f"[{symbol}|{timeframe}] 🧱 订单块计算完毕 -> 熊市OB(阻力区): [{bear_str}] | 牛市OB(支撑区): [{bull_str}]")
+        # ^---------------------------^
+
         if not (bull_ob or bear_ob):
             return
 
@@ -643,24 +735,13 @@ def check_high_funding_rate(exchange, symbol, timeframe, config, df, fund_params
         if current_rate is None:
             return
 
-        # 1. 确定结算周期 (小时)
-        interval_hours = 8  # 行业标准默认是8小时
+        interval_hours = 8
 
-        # 尝试从原始 info 中获取 (Binance 特有字段)
         if 'info' in funding_data:
             if 'fundingIntervalHours' in funding_data['info']:
                 interval_hours = int(funding_data['info']['fundingIntervalHours'])
 
-        # 2. 计算动态阈值
-        # 用户的逻辑: "每4小时必须达到配置标准...每小时只需要/4"
-        # 这意味着 config.json 里的 threshold 是以 【4小时】 为基准的
         baseline_hours = 4
-
-        # 动态调整公式: 实际阈值 = 配置阈值 * (当前周期 / 基准周期)
-        # 例如: 配置 1% (0.01)
-        # - 如果周期是 1h: 0.01 * (1/4) = 0.0025 (0.25%)
-        # - 如果周期是 4h: 0.01 * (4/4) = 0.01 (1%)
-        # - 如果周期是 8h: 0.01 * (8/4) = 0.02 (2%)
 
         config_threshold = fund_params.get('threshold', 0.01)
         dynamic_threshold = config_threshold * (interval_hours / baseline_hours)
@@ -668,7 +749,6 @@ def check_high_funding_rate(exchange, symbol, timeframe, config, df, fund_params
         if abs(current_rate) >= dynamic_threshold:
             rate_percent = current_rate * 100
 
-            # 判断方向
             if current_rate > 0:
                 direction_str = "多头支付空头 (费率极高)"
                 sentiment = "🔥 极度看涨/过热"
@@ -683,14 +763,12 @@ def check_high_funding_rate(exchange, symbol, timeframe, config, df, fund_params
                 next_fund_dt = datetime.fromtimestamp(funding_data['nextFundingTimestamp'] / 1000, tz=timezone.utc)
                 next_fund_time_str = next_fund_dt.strftime('%H:%M UTC')
 
-            # 动态生成一条说明，让用户知道为什么报警
             threshold_reason = ""
             if interval_hours != 4:
                 threshold_reason = f"(注: 结算周期为{interval_hours}h，阈值已自动调整为 {dynamic_threshold * 100:.3f}%)"
 
             signal_info = {
                 'log_name': 'High Funding Rate',
-                # 使用不带时间戳的 Alert Key 确保冷却生效
                 'alert_key': f"{symbol}_FUNDING_RATE_{config_index}",
                 'volume_must_confirm': False,
                 'title_template': f"{color_emoji} 资金费率告警: {symbol} 达 {rate_percent:.3f}%",
@@ -711,7 +789,6 @@ def check_high_funding_rate(exchange, symbol, timeframe, config, df, fund_params
                     "interval_hours": interval_hours,
                     "reason": threshold_reason
                 },
-                # 从配置读取冷却倍数，默认4倍
                 'cooldown_mult': fund_params.get('cooldown_mult', 4),
                 'always_show_volume': False
             }
@@ -720,77 +797,4 @@ def check_high_funding_rate(exchange, symbol, timeframe, config, df, fund_params
 
     except Exception as e:
         logger.error(f"❌ 在 {symbol} (资金费率监控) 中出错: {e}", exc_info=True)
-
-
-def check_ma_breakout(exchange, symbol, timeframe, config, df, ma_params, config_index=0):
-    """
-    监控价格是否突破或跌破指定的 MA (移动平均线) 集合。
-    支持配置任意周期的均线 (如 7, 25, 99)。
-    """
-    try:
-        # 从配置中读取均线周期列表，默认 [7, 25, 99]
-        ma_periods = ma_params.get('ma_periods', [7, 25, 99])
-        # 支持 SMA (简单均线) 或 EMA (指数均线)，默认 SMA
-        ma_type = ma_params.get('ma_type', 'sma').lower()
-
-        # 计算所有配置的均线
-        for period in ma_periods:
-            col_name = f"{ma_type}_{period}"
-            if ma_type == 'ema':
-                df[col_name] = pta.ema(df['close'], length=period)
-            else:
-                df[col_name] = pta.sma(df['close'], length=period)
-
-        # 剔除空值 (最长均线计算出来之前的行)
-        df_cleaned = df.dropna().reset_index(drop=True)
-        if len(df_cleaned) < 2:
-            return
-
-        current = df_cleaned.iloc[-1]
-        prev = df_cleaned.iloc[-2]
-
-        # 遍历每一根均线，检查是否发生交叉
-        for period in ma_periods:
-            col_name = f"{ma_type}_{period}"
-            if col_name not in current:
-                continue
-
-            ma_val = current[col_name]
-            prev_ma_val = prev[col_name]
-
-            # 核心判断逻辑：前一根收盘价在均线下方，当前收盘价在均线上方 = 突破
-            bullish = prev['close'] < prev_ma_val and current['close'] > ma_val
-            # 反之 = 跌破
-            bearish = prev['close'] > prev_ma_val and current['close'] < ma_val
-
-            if bullish or bearish:
-                action = "突破" if bullish else "跌破"
-                emoji = "🚀" if bullish else "📉"
-
-                signal_info = {
-                    'log_name': f'MA Breakout ({period})',
-                    # 告警Key加入了period，确保不同周期的均线突破独立计算冷却时间
-                    'alert_key': f"{symbol}_{timeframe}_MA_{action}_{period}_{config_index}",
-                    'volume_must_confirm': ma_params.get('volume_confirm', True),
-                    'fallback_multiplier': ma_params.get('volume_multiplier', 1.5),
-                    'title_template': f"{emoji} {{vol_label}}{action} {ma_type.upper()}{period}: {symbol} ({timeframe})",
-                    'message_template': (
-                        "{trend_message}**信号**: 价格实时 **{action}** {ma_type.upper()}({period}) 均线。\n\n"
-                        "> **当前价**: `{current_close:.4f}`\n"
-                        "> **均线值**: `{ma_value:.4f}`\n\n"
-                        "{vol_text}"
-                    ),
-                    'template_data': {
-                        "action": action,
-                        "period": period,
-                        "ma_type": ma_type.upper(),
-                        "current_close": current['close'],
-                        "ma_value": ma_val
-                    },
-                    'cooldown_mult': 1
-                }
-                _prepare_and_send_notification(config, symbol, timeframe, df, signal_info)
-
-    except Exception as e:
-        logger.error(f"❌ 在 {symbol} {timeframe} (MA突破监控) 中出错: {e}", exc_info=True)
-# --- END OF FILE app/analysis/strategies.py (WITH FUNDING INTERVAL LOGIC) ---
+# --- END OF FILE app/analysis/strategies.py ---
