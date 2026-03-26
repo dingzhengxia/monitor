@@ -74,6 +74,19 @@
       "medium": 50,
       "long": 120
     },
+    "ma_breakout": {
+      "enabled": true,
+      "ma_type": "sma",
+      "ma_periods": [
+        7,
+        25,
+        99
+      ],
+      "volume_confirm": true,
+      "exempt_static_on_volume": false,
+      "volume_multiplier": 1.5,
+      "exclude_timeframes": []
+    },
     "ema_cross": {
       "enabled": true,
       "period": 120,
@@ -129,7 +142,20 @@
       "volume_ma_period": 20,
       "atr_period": 14,
       "atr_multiplier_breakout": 0.5,
-      "exclude_timeframes": []
+      "exclude_timeframes": [],
+      "overrides_by_timeframe": {
+        "1d": {
+          "level_detection": {
+            "method": "advanced",
+            "clustering": {
+              "enabled": true,
+              "atr_grouping_multiplier": 1.5,
+              "min_cluster_size": 2,
+              "min_separation_atr_mult": 2.0
+            }
+          }
+        }
+      }
     },
     "rsi_divergence": {
       "enabled": false,

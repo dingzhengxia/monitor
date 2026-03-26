@@ -8,6 +8,7 @@ from app.analysis.strategies import (
     check_trend_channel_breakout,
     check_order_block_interaction,
     check_high_funding_rate,  # 依然导入，但在独立循环中使用
+    check_ma_breakout,
     _get_params_for_timeframe
 )
 from app.services.data_fetcher import fetch_ohlcv_data, get_top_n_symbols_by_volume
@@ -54,9 +55,10 @@ def _update_cache(exchange, config):
 # 注意：这里【不】包含 high_funding_rate，因为它现在是独立运行的
 STRATEGY_MAP = {
     'ema_cross': {'func': check_ema_signals, 'limit': 170},
+    'ma_breakout': {'func': check_ma_breakout, 'limit': 150},  # <--- 新增这行，limit设为150保证算得出99均线
     'kdj_cross': {'func': check_kdj_cross, 'limit': 170},
     'volatility_breakout': {'func': check_volatility_breakout, 'limit': 170},
-    'level_breakout': {'func': check_level_breakout, 'limit': 200},
+    'level_breakout': {'func': check_level_breakout, 'limit': 400},
     'rsi_divergence': {'func': check_rsi_divergence, 'limit': 170},
     'trend_channel_breakout': {'func': check_trend_channel_breakout, 'limit': 350},
     'consecutive_candles': {'func': check_consecutive_candles, 'limit': 50},

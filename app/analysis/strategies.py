@@ -720,4 +720,77 @@ def check_high_funding_rate(exchange, symbol, timeframe, config, df, fund_params
 
     except Exception as e:
         logger.error(f"❌ 在 {symbol} (资金费率监控) 中出错: {e}", exc_info=True)
+
+
+def check_ma_breakout(exchange, symbol, timeframe, config, df, ma_params, config_index=0):
+    """
+    监控价格是否突破或跌破指定的 MA (移动平均线) 集合。
+    支持配置任意周期的均线 (如 7, 25, 99)。
+    """
+    try:
+        # 从配置中读取均线周期列表，默认 [7, 25, 99]
+        ma_periods = ma_params.get('ma_periods', [7, 25, 99])
+        # 支持 SMA (简单均线) 或 EMA (指数均线)，默认 SMA
+        ma_type = ma_params.get('ma_type', 'sma').lower()
+
+        # 计算所有配置的均线
+        for period in ma_periods:
+            col_name = f"{ma_type}_{period}"
+            if ma_type == 'ema':
+                df[col_name] = pta.ema(df['close'], length=period)
+            else:
+                df[col_name] = pta.sma(df['close'], length=period)
+
+        # 剔除空值 (最长均线计算出来之前的行)
+        df_cleaned = df.dropna().reset_index(drop=True)
+        if len(df_cleaned) < 2:
+            return
+
+        current = df_cleaned.iloc[-1]
+        prev = df_cleaned.iloc[-2]
+
+        # 遍历每一根均线，检查是否发生交叉
+        for period in ma_periods:
+            col_name = f"{ma_type}_{period}"
+            if col_name not in current:
+                continue
+
+            ma_val = current[col_name]
+            prev_ma_val = prev[col_name]
+
+            # 核心判断逻辑：前一根收盘价在均线下方，当前收盘价在均线上方 = 突破
+            bullish = prev['close'] < prev_ma_val and current['close'] > ma_val
+            # 反之 = 跌破
+            bearish = prev['close'] > prev_ma_val and current['close'] < ma_val
+
+            if bullish or bearish:
+                action = "突破" if bullish else "跌破"
+                emoji = "🚀" if bullish else "📉"
+
+                signal_info = {
+                    'log_name': f'MA Breakout ({period})',
+                    # 告警Key加入了period，确保不同周期的均线突破独立计算冷却时间
+                    'alert_key': f"{symbol}_{timeframe}_MA_{action}_{period}_{config_index}",
+                    'volume_must_confirm': ma_params.get('volume_confirm', True),
+                    'fallback_multiplier': ma_params.get('volume_multiplier', 1.5),
+                    'title_template': f"{emoji} {{vol_label}}{action} {ma_type.upper()}{period}: {symbol} ({timeframe})",
+                    'message_template': (
+                        "{trend_message}**信号**: 价格实时 **{action}** {ma_type.upper()}({period}) 均线。\n\n"
+                        "> **当前价**: `{current_close:.4f}`\n"
+                        "> **均线值**: `{ma_value:.4f}`\n\n"
+                        "{vol_text}"
+                    ),
+                    'template_data': {
+                        "action": action,
+                        "period": period,
+                        "ma_type": ma_type.upper(),
+                        "current_close": current['close'],
+                        "ma_value": ma_val
+                    },
+                    'cooldown_mult': 1
+                }
+                _prepare_and_send_notification(config, symbol, timeframe, df, signal_info)
+
+    except Exception as e:
+        logger.error(f"❌ 在 {symbol} {timeframe} (MA突破监控) 中出错: {e}", exc_info=True)
 # --- END OF FILE app/analysis/strategies.py (WITH FUNDING INTERVAL LOGIC) ---
