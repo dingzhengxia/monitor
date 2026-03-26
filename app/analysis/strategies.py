@@ -533,13 +533,21 @@ def check_trend_channel_breakout(exchange, symbol, timeframe, config, df, channe
         df.ta.atr(length=14, append=True)
         atr_col = "ATRr_14"
         if atr_col not in df.columns: return
+
         df_for_channel = df.copy()
         df_for_channel['symbol'] = symbol
         df_for_channel['timeframe'] = timeframe
-        channel_info = detect_regression_channel(df_for_channel, lookback_period=channel_params.get('lookback_period'),
-                                                 min_trend_length=channel_params.get('min_trend_length', 20),
-                                                 std_dev_multiplier=channel_params.get('std_dev_multiplier', 2.0))
+
+        channel_info = detect_regression_channel(
+            df_for_channel,
+            lookback_period=channel_params.get('lookback_period'),
+            min_trend_length=channel_params.get('min_trend_length', 20),
+            std_dev_multiplier=channel_params.get('std_dev_multiplier', 2.0)
+        )
+
+        # 如果算法认为当前是震荡市，或者单边趋势太短，就会返回 None
         if not channel_info or len(df) < 3: return
+
         current, prev = df.iloc[-1], df.iloc[-2]
         current_upper_band = channel_info['upper_band'].iloc[-1]
         prev_upper_band = channel_info['upper_band'].iloc[-2]
@@ -547,29 +555,41 @@ def check_trend_channel_breakout(exchange, symbol, timeframe, config, df, channe
         prev_lower_band = channel_info['lower_band'].iloc[-2]
         confirmation_buffer = current.get(atr_col, 0) * channel_params.get('breakout_confirmation_atr', 0.0)
 
+        # V--- 新增：输出回归通道计算结果到日志 (Debug级别) ---V
+        trend_dir = "↘️下降趋势" if channel_info['slope'] < 0 else "↗️上升趋势"
+        logger.debug(
+            f"[{symbol}|{timeframe}] 🛤️ 通道计算完毕 -> {trend_dir} (已持续 {channel_info['trend_length']} 根K线) | 当前价: {current['close']:.2f} | 通道上轨: {current_upper_band:.2f} | 通道下轨: {current_lower_band:.2f}")
+        # ^-------------------------------------------------^
+
+        # 信号1：突破下降趋势的回归通道 (看涨)
         if channel_info['slope'] < 0:
             if prev['close'] < prev_upper_band and current['close'] > current_upper_band + confirmation_buffer:
-                signal_info = {'log_name': f"Channel Up", 'alert_key': f"{symbol}_{timeframe}_CHAN_UP_{config_index}",
-                               'volume_must_confirm': channel_params.get('volume_confirm', True),
-                               'fallback_multiplier': channel_params.get('volume_multiplier', 1.8),
-                               'title_template': f"📈 {{vol_label}}突破回归通道: {symbol} ({timeframe})",
-                               'message_template': (
-                                   "{trend_message}**信号**: **确认突破下降回归通道**。\n\n> **突破价格**: {current_close:.4f}\n\n{vol_text}"),
-                               'template_data': {"current_close": current['close']}, 'cooldown_mult': 4}
+                signal_info = {
+                    'log_name': f"Channel Up", 'alert_key': f"{symbol}_{timeframe}_CHAN_UP_{config_index}",
+                    'volume_must_confirm': channel_params.get('volume_confirm', True),
+                    'fallback_multiplier': channel_params.get('volume_multiplier', 1.8),
+                    'title_template': f"📈 {{vol_label}}突破回归通道: {symbol} ({timeframe})",
+                    'message_template': (
+                        "{trend_message}**信号**: **确认突破下降回归通道**。\n\n> **突破价格**: `{current_close:.4f}`\n\n{vol_text}"),
+                    'template_data': {"current_close": current['close']}, 'cooldown_mult': 4
+                }
                 _prepare_and_send_notification(config, symbol, timeframe, df, signal_info)
+
+        # 信号2：跌破上升趋势的回归通道 (看跌)
         elif channel_info['slope'] > 0:
             if prev['close'] > prev_lower_band and current['close'] < current_lower_band - confirmation_buffer:
-                signal_info = {'log_name': f"Channel Down",
-                               'alert_key': f"{symbol}_{timeframe}_CHAN_DOWN_{config_index}",
-                               'volume_must_confirm': channel_params.get('volume_confirm', True),
-                               'fallback_multiplier': channel_params.get('volume_multiplier', 1.8),
-                               'title_template': f"📉 {{vol_label}}跌破回归通道: {symbol} ({timeframe})",
-                               'message_template': (
-                                   "{trend_message}**信号**: **确认跌破上升回归通道**。\n\n> **跌破价格**: {current_close:.4f}\n\n{vol_text}"),
-                               'template_data': {"current_close": current['close']}, 'cooldown_mult': 4}
+                signal_info = {
+                    'log_name': f"Channel Down", 'alert_key': f"{symbol}_{timeframe}_CHAN_DOWN_{config_index}",
+                    'volume_must_confirm': channel_params.get('volume_confirm', True),
+                    'fallback_multiplier': channel_params.get('volume_multiplier', 1.8),
+                    'title_template': f"📉 {{vol_label}}跌破回归通道: {symbol} ({timeframe})",
+                    'message_template': (
+                        "{trend_message}**信号**: **确认跌破上升回归通道**。\n\n> **跌破价格**: `{current_close:.4f}`\n\n{vol_text}"),
+                    'template_data': {"current_close": current['close']}, 'cooldown_mult': 4
+                }
                 _prepare_and_send_notification(config, symbol, timeframe, df, signal_info)
     except Exception as e:
-        logger.error(f"❌ 通道突破错: {e}")
+        logger.error(f"❌ 通道突破错: {e}", exc_info=True)
 
 
 def check_consecutive_candles(exchange, symbol, timeframe, config, df, consecutive_params, config_index=0):

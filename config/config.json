@@ -120,7 +120,7 @@
     },
     "level_breakout": {
       "enabled": true,
-      "volume_confirm": true,
+      "volume_confirm": false,
       "exempt_static_on_volume": false,
       "volume_multiplier": 1.5,
       "level_detection": {
@@ -186,10 +186,10 @@
       {
         "name": "短期趋势通道 (1h/4h)",
         "enabled": true,
-        "min_trend_length": 15,
-        "std_dev_multiplier": 1.5,
-        "breakout_confirmation_atr": 0.2,
-        "volume_confirm": true,
+        "min_trend_length": 10,
+        "std_dev_multiplier": 1.2,
+        "breakout_confirmation_atr": 0.1,
+        "volume_confirm": false,
         "exempt_static_on_volume": true,
         "volume_multiplier": 1.5,
         "exclude_timeframes": [
@@ -207,10 +207,10 @@
       {
         "name": "长期趋势通道 (All TFs)",
         "enabled": true,
-        "min_trend_length": 30,
-        "std_dev_multiplier": 2.0,
-        "breakout_confirmation_atr": 0.3,
-        "volume_confirm": true,
+        "min_trend_length": 20,
+        "std_dev_multiplier": 1.8,
+        "breakout_confirmation_atr": 0.2,
+        "volume_confirm": false,
         "exempt_static_on_volume": true,
         "volume_multiplier": 2.0,
         "exclude_timeframes": [],
