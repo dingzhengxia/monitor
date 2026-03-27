@@ -121,7 +121,7 @@
     "level_breakout": {
       "enabled": true,
       "volume_confirm": false,
-      "exempt_static_on_volume": false,
+      "exempt_static_on_volume": true,
       "volume_multiplier": 1.5,
       "level_detection": {
         "method": "advanced",
@@ -129,9 +129,6 @@
           "enabled": true,
           "left_bars": 7,
           "right_bars": 7
-        },
-        "clustering": {
-          "enabled": false
         },
         "rolling_pivots": {
           "enabled": true
@@ -163,10 +160,17 @@
         "1h"
       ]
     },
-    "order_block_interaction": {
+    "ob_luxalgo": {
       "enabled": true,
-      "swing_length": 50,
-      "atr_multiplier": 0.1,
+      "swing_length": 5,
+      "alert_on_rejection": true,
+      "alert_on_breakout": true,
+      "exclude_timeframes": []
+    },
+    "ob_fluxcharts": {
+      "enabled": true,
+      "swing_length": 10,
+      "atr_multiplier": 3.5,
       "alert_on_rejection": true,
       "alert_on_breakout": true,
       "exclude_timeframes": []

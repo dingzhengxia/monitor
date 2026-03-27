@@ -1,131 +1,104 @@
-# --- START OF FILE app/analysis/order_blocks.py (WITH MINIMUM THICKNESS) ---
+# --- START OF FILE app/analysis/order_blocks.py ---
 import pandas as pd
-from scipy.signal import find_peaks
 
 
-def find_latest_order_blocks(df, swing_length=10, atr_multiplier=0.1):
+def find_lux_order_blocks(df, swing_length=5):
     """
-    【优化版】查找最新的牛市和熊市订单块。
-    新增特性：
-    - 最小厚度保证：如果识别到的订单块K线太薄（小于0.5倍ATR），
-      会自动基于ATR将其扩充，防止区域过窄导致误报。
+    【流派1: LuxAlgo 爆量订单块】
+    基于成交量峰值 (Volume Pivots) 和局部极值，捕捉极限拐点。
     """
-    if len(df) < swing_length * 2 + 2:
-        return None, None
+    length = swing_length
+    if len(df) < length * 2 + 1: return None, None
+
+    bull_obs, bear_obs = [], []
+
+    for i in range(length, len(df) - length):
+        vol_center = df['volume'].iloc[i]
+        vol_left_max = df['volume'].iloc[i - length:i].max()
+        vol_right_max = df['volume'].iloc[i + 1:i + length + 1].max()
+
+        if (vol_center > vol_left_max) and (vol_center > vol_right_max):
+            high_center = df['high'].iloc[i]
+            low_center = df['low'].iloc[i]
+            local_highest = df['high'].iloc[i - length:i].max()
+            local_lowest = df['low'].iloc[i - length:i].min()
+
+            if high_center >= local_highest:
+                bear_obs.append({
+                    'top': high_center, 'bottom': (high_center + low_center) / 2,
+                    'index': i, 'timestamp': df['timestamp'].iloc[i], 'type': 'bearish'
+                })
+            elif low_center <= local_lowest:
+                bull_obs.append({
+                    'top': (high_center + low_center) / 2, 'bottom': low_center,
+                    'index': i, 'timestamp': df['timestamp'].iloc[i], 'type': 'bullish'
+                })
+
+    # Mitigation (剔除失效块：被实体突破/跌破的过滤)
+    valid_bull_obs = [ob for ob in bull_obs if not (df['low'].iloc[ob['index'] + 1:] < ob['bottom']).any()]
+    valid_bear_obs = [ob for ob in bear_obs if not (df['high'].iloc[ob['index'] + 1:] > ob['top']).any()]
+
+    return (valid_bull_obs[-1] if valid_bull_obs else None), (valid_bear_obs[-1] if valid_bear_obs else None)
+
+
+def find_flux_order_blocks(df, swing_length=10, atr_multiplier=3.5):
+    """
+    【流派2: FluxCharts 结构订单块】
+    基于市场结构破坏 (BOS) 并向后溯源起涨/起跌点，捕捉机构成本区。
+    """
+    if len(df) < swing_length * 2 + 1: return None, None
 
     df_copy = df.copy()
+    df_copy.ta.atr(length=10, append=True)
+    atr_col = "ATRr_10"
 
-    # --- 1. 使用 SciPy find_peaks 识别摆动点 ---
-    highs = df_copy['high'].to_numpy()
-    lows = df_copy['low'].to_numpy()
+    df_copy['is_swing_high'] = df_copy['high'] == df_copy['high'].rolling(window=swing_length * 2 + 1,
+                                                                          center=True).max()
+    df_copy['is_swing_low'] = df_copy['low'] == df_copy['low'].rolling(window=swing_length * 2 + 1, center=True).min()
 
-    swing_high_indices, _ = find_peaks(highs, distance=swing_length)
-    swing_low_indices, _ = find_peaks(-lows, distance=swing_length)
+    bull_obs, bear_obs = [], []
+    last_swing_high_idx, last_swing_low_idx = None, None
+    high_crossed, low_crossed = True, True
 
-    # --- 2. 计算 ATR (用于结构破坏验证 + 最小厚度计算) ---
-    atr_period = 14
-    df_copy.ta.atr(length=atr_period, append=True)
-    atr_col = f"ATRr_{atr_period}"
+    for i in range(swing_length, len(df_copy)):
+        check_idx = i - swing_length
+        if df_copy['is_swing_high'].iloc[check_idx]:
+            last_swing_high_idx = check_idx
+            high_crossed = False
+        if df_copy['is_swing_low'].iloc[check_idx]:
+            last_swing_low_idx = check_idx
+            low_crossed = False
 
-    # 如果无法计算ATR，就没法做后续判断，直接返回
-    if atr_col not in df_copy.columns:
-        return None, None
+        current_close = df_copy['close'].iloc[i]
+        current_atr = df_copy[atr_col].iloc[i] if atr_col in df_copy.columns else 0
 
-    latest_bullish_ob = None
-    latest_bearish_ob = None
+        # 牛市 OB
+        if last_swing_high_idx is not None and not high_crossed:
+            if current_close > df_copy['high'].iloc[last_swing_high_idx]:
+                high_crossed = True
+                search_df = df_copy.iloc[last_swing_high_idx:i]
+                if not search_df.empty:
+                    lowest_idx = search_df['low'].idxmin()
+                    top, bottom = df_copy['high'].iloc[lowest_idx], df_copy['low'].iloc[lowest_idx]
+                    if (top - bottom) <= current_atr * atr_multiplier or current_atr == 0:
+                        bull_obs.append({'top': top, 'bottom': bottom, 'break_idx': i,
+                                         'timestamp': df_copy['timestamp'].iloc[lowest_idx], 'type': 'bullish'})
 
-    # 设定最小厚度系数 (例如: 区域宽度至少要达到 0.5 倍 ATR)
-    MIN_THICKNESS_ATR_MULT = 0.5
+        # 熊市 OB
+        if last_swing_low_idx is not None and not low_crossed:
+            if current_close < df_copy['low'].iloc[last_swing_low_idx]:
+                low_crossed = True
+                search_df = df_copy.iloc[last_swing_low_idx:i]
+                if not search_df.empty:
+                    highest_idx = search_df['high'].idxmax()
+                    top, bottom = df_copy['high'].iloc[highest_idx], df_copy['low'].iloc[highest_idx]
+                    if (top - bottom) <= current_atr * atr_multiplier or current_atr == 0:
+                        bear_obs.append({'top': top, 'bottom': bottom, 'break_idx': i,
+                                         'timestamp': df_copy['timestamp'].iloc[highest_idx], 'type': 'bearish'})
 
-    # --- 辅助函数：确保区域有一定厚度 ---
-    def expand_zone_if_needed(top, bottom, atr_value):
-        height = top - bottom
-        min_height = atr_value * MIN_THICKNESS_ATR_MULT
+    # Mitigation (剔除失效块)
+    valid_bull_obs = [ob for ob in bull_obs if not (df_copy['low'].iloc[ob['break_idx'] + 1:] < ob['bottom']).any()]
+    valid_bear_obs = [ob for ob in bear_obs if not (df_copy['high'].iloc[ob['break_idx'] + 1:] > ob['top']).any()]
 
-        if height < min_height:
-            # 区域太窄，进行中心扩散
-            center = (top + bottom) / 2
-            half_min = min_height / 2
-            return center + half_min, center - half_min
-        return top, bottom
-
-    # 1. 寻找最新的熊市订单块 (Bearish OB - 阻力)
-    for low_idx in reversed(swing_low_indices):
-        if low_idx >= len(df_copy) - 1: continue
-
-        swing_low_price = df_copy.at[low_idx, 'low']
-        atr_at_swing = df_copy.at[low_idx, atr_col]
-        if pd.isna(atr_at_swing) or atr_at_swing == 0: continue
-
-        break_threshold = swing_low_price - (atr_at_swing * atr_multiplier)
-
-        break_df = df_copy.loc[low_idx + 1:]
-        break_indices = break_df[break_df['close'] < break_threshold].index
-
-        if not break_indices.empty:
-            break_idx = break_indices[0]
-
-            ob_candle_idx = -1
-            search_range_df = df_copy.loc[low_idx:break_idx]
-            # 熊市OB通常是下跌前的最后一根阳线
-            up_candles = search_range_df[search_range_df['close'] > search_range_df['open']]
-
-            if not up_candles.empty:
-                ob_candle_idx = up_candles.index[-1]
-
-            if ob_candle_idx != -1:
-                raw_top = df_copy.at[ob_candle_idx, 'high']
-                raw_bottom = df_copy.at[ob_candle_idx, 'low']
-
-                # 【核心优化】应用最小厚度逻辑
-                final_top, final_bottom = expand_zone_if_needed(raw_top, raw_bottom, atr_at_swing)
-
-                latest_bearish_ob = {
-                    'top': final_top,
-                    'bottom': final_bottom,
-                    'timestamp': df_copy.at[ob_candle_idx, 'timestamp'],
-                    'type': 'bearish'
-                }
-                break
-
-    # 2. 寻找最新的牛市订单块 (Bullish OB - 支撑)
-    for high_idx in reversed(swing_high_indices):
-        if high_idx >= len(df_copy) - 1: continue
-
-        swing_high_price = df_copy.at[high_idx, 'high']
-        atr_at_swing = df_copy.at[high_idx, atr_col]
-        if pd.isna(atr_at_swing) or atr_at_swing == 0: continue
-
-        break_threshold = swing_high_price + (atr_at_swing * atr_multiplier)
-
-        break_df = df_copy.loc[high_idx + 1:]
-        break_indices = break_df[break_df['close'] > break_threshold].index
-
-        if not break_indices.empty:
-            break_idx = break_indices[0]
-
-            ob_candle_idx = -1
-            search_range_df = df_copy.loc[high_idx:break_idx]
-            # 牛市OB通常是上涨前的最后一根阴线
-            down_candles = search_range_df[search_range_df['close'] < search_range_df['open']]
-
-            if not down_candles.empty:
-                ob_candle_idx = down_candles.index[-1]
-
-            if ob_candle_idx != -1:
-                raw_top = df_copy.at[ob_candle_idx, 'high']
-                raw_bottom = df_copy.at[ob_candle_idx, 'low']
-
-                # 【核心优化】应用最小厚度逻辑
-                final_top, final_bottom = expand_zone_if_needed(raw_top, raw_bottom, atr_at_swing)
-
-                latest_bullish_ob = {
-                    'top': final_top,
-                    'bottom': final_bottom,
-                    'timestamp': df_copy.at[ob_candle_idx, 'timestamp'],
-                    'type': 'bullish'
-                }
-                break
-
-    return latest_bullish_ob, latest_bearish_ob
-# --- END OF FILE app/analysis/order_blocks.py (WITH MINIMUM THICKNESS) ---
+    return (valid_bull_obs[-1] if valid_bull_obs else None), (valid_bear_obs[-1] if valid_bear_obs else None)
+# --- END OF FILE app/analysis/order_blocks.py ---
