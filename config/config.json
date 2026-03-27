@@ -148,8 +148,8 @@
             "method": "advanced",
             "swing_pivots": {
               "enabled": true,
-              "left_bars": 3,
-              "right_bars": 3
+              "left_bars": 10,
+              "right_bars": 10
             }
           }
         }
