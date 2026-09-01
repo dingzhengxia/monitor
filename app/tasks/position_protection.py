@@ -31,6 +31,8 @@ from pathlib import Path
 import pandas as pd
 from loguru import logger
 
+from app.services.notification_service import send_alert
+
 STATE_FILE = Path("position_protection_state.json")
 STATE_VERSION = 2
 CLIENT_ALGO_PREFIX = "PM_SL_"
@@ -336,6 +338,35 @@ def _replace_stop(exchange, symbol, position, side, stops, new_stop):
     return order
 
 
+def _notify_stop_change(config, symbol, side, reason, current_price, entry_price,
+                       old_stop, new_stop, atr=None, contracts=None, extra=None):
+    """Queue a DingTalk notification for an actual stop/order change.
+
+    Notification failures must never interrupt stop-loss management because
+    send_alert() only queues the message and the consumer sends it in the
+    background.
+    """
+    try:
+        side_cn = "多仓" if side == "long" else "空仓"
+        lines = [
+            f"### 🛡️ 止损已{reason}",
+            f"**交易对：** {symbol}",
+            f"**方向：** {side_cn}",
+            f"**仓位：** {contracts:g}" if contracts is not None else None,
+            f"**平均开仓价：** {entry_price:.8g}",
+            f"**当前价格：** {current_price:.8g}" if current_price is not None else None,
+            f"**ATR(1h)：** {atr:.8g}" if atr is not None else None,
+            f"**原止损：** {old_stop:.8g}" if old_stop is not None else None,
+            f"**新止损：** {new_stop:.8g}",
+        ]
+        if extra:
+            lines.append(f"**说明：** {extra}")
+        message = "\n\n".join(x for x in lines if x)
+        send_alert(config, f"🛡️ {symbol} {side_cn} 止损{reason}", message, symbol)
+    except Exception as e:
+        logger.error(f"⚠️ {symbol} 止损变更钉钉通知入队失败：{e}", exc_info=True)
+
+
 def _state_key(symbol, raw_position_side, side):
     return f"{symbol}|{raw_position_side}|{side}"
 
@@ -477,6 +508,16 @@ def protect_positions(exchange, config):
                     f"✅ {symbol} {side} 加仓后已重置：entry={entry}, ATR={atr:.8g}, "
                     f"distance={distance_pct:.2%}, stop={stop_price}, algoId={order.get('algoId')}"
                 )
+                _notify_stop_change(
+                    config, symbol, side, "重置",
+                    current_price=current_price,
+                    entry_price=entry,
+                    old_stop=_select_existing_stop(stops, side)[0] if stops else None,
+                    new_stop=stop_price,
+                    atr=atr,
+                    contracts=contracts,
+                    extra="检测到加仓，旧止损保护周期已重置，并按新的平均开仓价重新计算。",
+                )
                 continue
 
             # First time the bot sees this position: respect an existing stop.
@@ -510,6 +551,16 @@ def protect_positions(exchange, config):
                     f"🛡️ {symbol} {side} 首次添加止损：entry={entry}, ATR={atr:.8g}, "
                     f"distance={distance_pct:.2%}, stop={stop_price}, algoId={order.get('algoId')}"
                 )
+                _notify_stop_change(
+                    config, symbol, side, "建立",
+                    current_price=current_price,
+                    entry_price=entry,
+                    old_stop=None,
+                    new_stop=stop_price,
+                    atr=atr,
+                    contracts=contracts,
+                    extra="发现仓位没有止损，已自动建立初始保护止损。",
+                )
                 continue
 
             # Keep state synchronized with current position size and average entry.
@@ -541,6 +592,16 @@ def protect_positions(exchange, config):
                 logger.warning(
                     f"⚠️ {symbol} {side} 状态显示已有止损，但交易所未发现止损，已立即重建：{replacement}"
                 )
+                _notify_stop_change(
+                    config, symbol, side, "重建",
+                    current_price=current_price,
+                    entry_price=entry,
+                    old_stop=remembered_stop,
+                    new_stop=replacement,
+                    atr=atr,
+                    contracts=contracts,
+                    extra="程序状态显示原有止损存在，但交易所未找到保护单，已立即重建。",
+                )
                 continue
 
             # If the position was reduced, synchronize stop quantity while keeping
@@ -558,6 +619,16 @@ def protect_positions(exchange, config):
                 logger.info(
                     f"📉 {symbol} {side} 仓位减少/止损数量不一致：{old_contracts} -> {contracts}，"
                     f"保持止损价格 {replacement}，同步保护数量。"
+                )
+                _notify_stop_change(
+                    config, symbol, side, "同步",
+                    current_price=current_price,
+                    entry_price=entry,
+                    old_stop=existing_stop,
+                    new_stop=replacement,
+                    atr=atr,
+                    contracts=contracts,
+                    extra=f"仓位数量已同步为 {contracts:g}，止损价格保持不变。",
                 )
                 continue
 
@@ -623,6 +694,16 @@ def protect_positions(exchange, config):
             state[key] = previous
             logger.success(
                 f"✅ {symbol} {side} 止损已向盈利方向移动：{candidate} | algoId={order.get('algoId')}"
+            )
+            _notify_stop_change(
+                config, symbol, side, "移动",
+                current_price=current_price,
+                entry_price=entry,
+                old_stop=existing_stop,
+                new_stop=candidate,
+                atr=atr,
+                contracts=contracts,
+                extra=f"盈利已达到 {activation_atr:.2f} ATR 后启动单向移动止损；止损只向盈利方向移动。",
             )
 
         except Exception as e:
