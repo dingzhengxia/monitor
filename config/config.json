@@ -6,6 +6,11 @@
     "log_level": "DEBUG",
     "max_workers": 2
   },
+  "position_protection": {
+    "enabled": true,
+    "interval_minutes": 5,
+    "stop_loss_percent": 2.0
+  },
   "market_settings": {
     "timeframes": [
       "1h",

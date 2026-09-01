@@ -31,6 +31,7 @@ from app.services.notification_service import notification_consumer
 from app.state import load_alert_states, save_alert_states
 from app.tasks.periodic_reporter import run_periodic_report
 from app.tasks.signal_scanner import run_signal_check_cycle
+from app.tasks.position_protection import protect_positions
 from app.utils import timeframe_to_minutes
 
 
@@ -54,9 +55,33 @@ def main():
     load_alert_states()
 
     app_conf = config.get('app_settings', {})
+    exchange_kwargs = {
+        'enableRateLimit': True,
+        'options': {
+            'defaultType': app_conf.get('default_market_type')
+        }
+    }
+
+    # 从环境变量读取 API
+    # 不把 API Key 写进 config.json
+    import os
+
+    api_key = os.getenv("BINANCE_API_KEY")
+    api_secret = os.getenv("BINANCE_API_SECRET")
+
+    if api_key and api_secret:
+        exchange_kwargs["apiKey"] = api_key
+        exchange_kwargs["secret"] = api_secret
+    else:
+        logger.warning(
+            "⚠️ 未发现 BINANCE_API_KEY / BINANCE_API_SECRET，"
+            "仓位止损保护将无法访问真实账户。"
+        )
+
     try:
         exchange = getattr(ccxt, app_conf.get('exchange'))(
-            {'enableRateLimit': True, 'options': {'defaultType': app_conf.get('default_market_type')}})
+            exchange_kwargs
+        )
     except (AttributeError, KeyError) as e:
         logger.error(f"❌ 初始化交易所失败: 配置错误或交易所不支持 - {e}");
         return
@@ -121,6 +146,37 @@ def main():
     scheduler.add_job(run_signal_check_cycle, IntervalTrigger(minutes=interval_minutes), args=[exchange, config],
                       name="SignalCheckCycle")
     logger.info(f"   - 动态热点监控任务已添加，每 {interval_minutes} 分钟运行一次。")
+    # ============================================================
+    # 仓位止损保护任务
+    # 独立于主信号扫描
+    # ============================================================
+
+    position_protection_conf = config.get(
+        "position_protection",
+        {}
+    )
+
+    if position_protection_conf.get("enabled", True):
+        protection_interval = position_protection_conf.get(
+            "interval_minutes",
+            5
+        )
+
+        scheduler.add_job(
+            protect_positions,
+            IntervalTrigger(minutes=protection_interval),
+            args=[exchange, config],
+            name="PositionProtection",
+            max_instances=1,
+            coalesce=True,
+        )
+
+        logger.info(
+            f"🛡️ 仓位止损保护任务已添加："
+            f"每 {protection_interval} 分钟检查一次，"
+            f"止损距离 "
+            f"{position_protection_conf.get('stop_loss_percent', 2.0)}%"
+        )
 
     logger.info(f"\n📅 调度器已启动，请保持程序运行。按 Ctrl+C 退出。")
     try:

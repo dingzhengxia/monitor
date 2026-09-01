@@ -8,6 +8,8 @@ services:
     # --- 新增部分开始 ---
     environment:
       - TZ=Asia/Shanghai  # 强制容器使用北京时间
+      - BINANCE_API_KEY=${BINANCE_API_KEY}
+      - BINANCE_API_SECRET=${BINANCE_API_SECRET}
     # --- 新增部分结束 ---
     volumes:
       - ./config:/usr/src/app/config
