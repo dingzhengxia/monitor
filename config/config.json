@@ -287,9 +287,7 @@
   ],
   "notification_settings": {
     "dingtalk": {
-      "enabled": true,
-      "webhook_url": "https://oapi.dingtalk.com/robot/send?access_token=edddf82c3fbbdb588f2ac0f34063dc62b5d491bbf4229448198ddfa23b5841ee",
-      "secret": "SECcb85b5e3bf387be5e475f157349da3e93cc12d95b62cc7b7a4bdefbe0037a1cd"
+      "enabled": true
     },
     "desktop": {
       "enabled": false,

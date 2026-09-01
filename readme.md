@@ -177,3 +177,42 @@
 | `desktop` | `(object)` | **桌面弹窗通知配置**。 |
 | ▷ `enabled` | `true` | 是否启用桌面通知。 |
 | ▷ `timeout_seconds` | `30` | 桌面通知的显示驻留时间（秒）。 |
+---
+
+## 仓位 ATR 止损保护
+
+仓位保护与主信号扫描独立运行，默认每 5 分钟检查一次；程序启动后会立即执行一次检查。
+
+当前默认参数：
+
+- ATR 周期：`1h`
+- ATR Period：`14`
+- ATR 倍数：`2.0`
+- 止损距离下限：`1.5%`
+- 止损距离上限：`8%`
+- 盈利达到：`1.5 ATR` 后启动移动止损
+- 多仓移动止损：近期最高价 - `2 ATR`
+- 空仓移动止损：近期最低价 + `2 ATR`
+- 止损只允许朝盈利方向移动
+- 加仓：使用新的平均开仓价完全重置止损周期
+- 减仓：不重置移动止损，只同步止损数量
+
+状态保存在 `position_protection_state.json`。该文件已加入 `.gitignore`，并通过 Docker bind mount 持久化。
+
+### 环境变量
+
+复制 `.env.example` 为 `.env`，至少填写：
+
+```text
+BINANCE_API_KEY=...
+BINANCE_API_SECRET=...
+```
+
+钉钉通知建议使用：
+
+```text
+DINGTALK_WEBHOOK_URL=...
+DINGTALK_SECRET=...
+```
+
+不要把真实密钥提交到 Git。

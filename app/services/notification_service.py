@@ -6,6 +6,7 @@ import json
 import queue
 import time
 import urllib.parse
+import os
 
 import requests
 from plyer import notification
@@ -26,8 +27,10 @@ def _send_desktop_notification(title, message, timeout=10):
 def _send_dingtalk_request(config, payload):
     """ 封装了签名和发送请求的通用函数 """
     dingtalk_conf = config.get('notification_settings', {}).get('dingtalk', {})
-    webhook_url = dingtalk_conf.get('webhook_url')
-    secret = dingtalk_conf.get('secret')
+    # Secrets are read from environment variables first so they do not need to
+    # live in config.json or Git. Config values remain as a backwards-compatible fallback.
+    webhook_url = os.getenv('DINGTALK_WEBHOOK_URL') or dingtalk_conf.get('webhook_url')
+    secret = os.getenv('DINGTALK_SECRET') or dingtalk_conf.get('secret')
 
     if not webhook_url:
         logger.warning("钉钉 webhook_url 未配置")

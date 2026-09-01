@@ -1,13 +1,20 @@
-app/__pycache__/
-app/analysis/__pycache__/
-app/services/__pycache__/
-app/tasks/__pycache__/
-monitor/__pycache__/
-.idea/
-monitor.log
-cooldown_status.json
-.log
-log/
-.env
-position_protection_state.json
+# Python / IDE
 __pycache__/
+*.py[cod]
+.idea/
+.vscode/
+
+# Runtime logs and state
+monitor.log
+*.log
+log/
+cooldown_status.json
+position_protection_state.json
+
+# Secrets
+.env
+
+# Local build artifacts
+*.tmp
+*.bak
+*.swp

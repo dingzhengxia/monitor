@@ -33,11 +33,24 @@ if [ ! -f "cooldown_status.json" ]; then
 fi
 
 # 仓位保护状态文件
+if [ -d "position_protection_state.json" ]; then
+    echo -e "${RED}⚠️ 发现错误的 position_protection_state.json 文件夹，正在删除...${NC}"
+    rm -rf position_protection_state.json
+fi
+
 if [ ! -f "position_protection_state.json" ]; then
     echo -e "${GREEN}✨ 初始化空的 position_protection_state.json 文件...${NC}"
-    echo "{}" > position_protection_state.json
+    printf '{}\n' > position_protection_state.json
 fi
-echo -e "${GREEN}状态文件准备完毕。${NC}\n"
+chmod 600 position_protection_state.json
+
+# Docker Compose 使用 bind mount 文件，先确保 .env 存在。
+if [ ! -f ".env" ]; then
+    echo -e "${RED}❌ 未找到 .env 文件。请先复制 .env.example 为 .env 并填写 Binance API 密钥。${NC}"
+    exit 1
+fi
+
+echo -e "${GREEN}状态文件与环境文件准备完毕。${NC}\n"
 
 # --- 步骤 2: 重构并重启 Docker 服务 ---
 echo -e "${YELLOW}Step 2/3: 正在重新构建 Docker 镜像并重启服务...${NC}"

@@ -85,6 +85,15 @@ def main():
     logger.info(
         f"📊 交易所: {app_conf.get('exchange')} | 市场: {app_conf.get('default_market_type')} | 间隔: {app_conf.get('check_interval_minutes')} 分钟")
 
+    # 首次启动立即执行仓位保护，优先于主信号扫描，避免启动阶段出现未保护仓位。
+    protection_conf = config.get('position_protection', {})
+    if protection_conf.get('enabled', True):
+        logger.info("\n🛡️ 首次启动：立即执行一次仓位保护检查...")
+        try:
+            protect_positions(exchange, config)
+        except Exception as e:
+            logger.error(f"❌ 首次仓位保护检查失败：{e}", exc_info=True)
+
     consumer_thread = threading.Thread(target=notification_consumer, daemon=True)
     consumer_thread.start()
     logger.info("✅ 通知队列消费者线程已启动。")
@@ -140,7 +149,6 @@ def main():
     logger.info(f"   - 动态热点监控任务已添加，每 {interval_minutes} 分钟运行一次。")
 
     # 独立的仓位保护任务：始终每 5 分钟检查一次，不受主策略扫描周期影响。
-    protection_conf = config.get('position_protection', {})
     if protection_conf.get('enabled', True):
         protection_interval = int(protection_conf.get('interval_minutes', 5))
         scheduler.add_job(
