@@ -354,7 +354,7 @@ def protect_positions(exchange, config):
         挂 STOP_MARKET
     """
 
-    logger.error("🛡️ 执行仓位保护。")
+    logger.error("🛡️ 执行仓位保护。===============================================================")
 
     protection_conf = config.get(
         "position_protection",
