@@ -456,6 +456,21 @@ def protect_positions(exchange, config):
 
     for key in list(state.keys()):
         if key not in active_keys:
+            # 1. 发现仓位已平，提取之前记录的止损单 ID
+            old_state = state[key]
+            algo_id = old_state.get("stop_algo_id")
+            symbol_from_key = key.split('|')[0] 
+            
+            if algo_id:
+                try:
+                    # 调用现有的撤单接口
+                    _cancel_algo(exchange, symbol_from_key, algo_id)
+                    logger.info(f"🧹 {symbol_from_key} 仓位已平，已成功清理遗留的保护止损单 (AlgoId: {algo_id})")
+                except Exception as e:
+                    # 吞掉异常：如果止损单是被触发平仓的，它在交易所已失效
+                    logger.debug(f"ℹ️ {symbol_from_key} 遗留止损单清理跳过 (可能已被触发或手动撤销): {e}")
+            
+            # 2. 从本地状态字典中安全删除
             del state[key]
 
     if not active:
