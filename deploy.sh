@@ -31,6 +31,12 @@ if [ ! -f "cooldown_status.json" ]; then
     echo -e "${GREEN}✨ 初始化空的 cooldown_status.json 文件...${NC}"
     echo "{}" > cooldown_status.json
 fi
+
+# 仓位保护状态文件
+if [ ! -f "position_protection_state.json" ]; then
+    echo -e "${GREEN}✨ 初始化空的 position_protection_state.json 文件...${NC}"
+    echo "{}" > position_protection_state.json
+fi
 echo -e "${GREEN}状态文件准备完毕。${NC}\n"
 
 # --- 步骤 2: 重构并重启 Docker 服务 ---

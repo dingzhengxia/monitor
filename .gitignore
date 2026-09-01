@@ -8,3 +8,6 @@ monitor.log
 cooldown_status.json
 .log
 log/
+.env
+position_protection_state.json
+__pycache__/

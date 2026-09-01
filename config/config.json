@@ -6,11 +6,6 @@
     "log_level": "DEBUG",
     "max_workers": 2
   },
-  "position_protection": {
-    "enabled": true,
-    "interval_minutes": 5,
-    "stop_loss_percent": 2.0
-  },
   "market_settings": {
     "timeframes": [
       "1h",
@@ -299,6 +294,21 @@
     "desktop": {
       "enabled": false,
       "timeout_seconds": 30
+    }
+  },
+  "position_protection": {
+    "enabled": true,
+    "interval_minutes": 5,
+    "atr": {
+      "timeframe": "5m",
+      "period": 14,
+      "multiplier": 1.5,
+      "min_percent": 0.01,
+      "max_percent": 0.04
+    },
+    "trailing": {
+      "enabled": true,
+      "activation_atr": 1.0
     }
   }
 }

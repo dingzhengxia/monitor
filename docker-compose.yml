@@ -5,15 +5,16 @@ services:
     build: .
     container_name: crypto-monitor
     restart: unless-stopped
+    env_file:
+      - .env
     # --- 新增部分开始 ---
     environment:
       - TZ=Asia/Shanghai  # 强制容器使用北京时间
-      - BINANCE_API_KEY=${BINANCE_API_KEY}
-      - BINANCE_API_SECRET=${BINANCE_API_SECRET}
     # --- 新增部分结束 ---
     volumes:
       - ./config:/usr/src/app/config
       - ./log:/usr/src/app/log
       - ./cooldown_status.json:/usr/src/app/cooldown_status.json
+      - ./position_protection_state.json:/usr/src/app/position_protection_state.json
       # --- 新增部分（可选，Linux服务器推荐）---
       - /etc/localtime:/etc/localtime:ro
