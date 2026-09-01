@@ -299,16 +299,17 @@
   "position_protection": {
     "enabled": true,
     "interval_minutes": 5,
+    "stop_mode": "atr",
     "atr": {
-      "timeframe": "5m",
+      "timeframe": "1h",
       "period": 14,
-      "multiplier": 1.5,
-      "min_percent": 0.01,
-      "max_percent": 0.04
+      "multiplier": 2.0,
+      "min_percent": 0.015,
+      "max_percent": 0.08
     },
     "trailing": {
       "enabled": true,
-      "activation_atr": 1.0
+      "activation_atr": 1.5
     }
   }
 }
