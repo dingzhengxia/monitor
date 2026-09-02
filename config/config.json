@@ -307,6 +307,7 @@
     "exchange_buffer_pct": 0.01,
     "auto_reset_state_on_add": true,
     "sync_exchange_stop_on_reduce": true,
+    "trailing_update_threshold_pct": 0.005,
     "take_profit": {
       "enabled": false,
       "mode": "rr_ratio",
