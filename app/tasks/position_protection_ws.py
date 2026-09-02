@@ -10,6 +10,7 @@ import asyncio
 import json
 import os
 import uuid
+from datetime import time
 from pathlib import Path
 
 import ccxt.pro as ccxtpro
@@ -225,6 +226,10 @@ async def cleanup_orphaned_state_and_orders(exchange):
     """【恢复清理逻辑】定期检查并清理无持仓币种残留的本地状态与交易所孤儿条件单"""
     logger.info("🧹 执行后台清理维护任务：检查孤儿状态与残留条件单...")
     try:
+        # 确保市场列表已加载，否则 exchange.markets 会为空
+        if not exchange.markets:
+            await exchange.load_markets()
+
         positions = await exchange.fetch_positions()
         active_symbols = {p["symbol"] for p in positions if _position_size(p) > 0}
 
@@ -232,7 +237,6 @@ async def cleanup_orphaned_state_and_orders(exchange):
         state = _load_state()
         state_modified = False
         for key in list(state.keys()):
-            # 兼容带有币种名称的记录
             found_active = any(sym in key for sym in active_symbols)
             if not found_active and active_symbols:
                 state.pop(key, None)
@@ -257,8 +261,7 @@ async def cleanup_orphaned_state_and_orders(exchange):
                 except Exception:
                     pass
     except Exception as e:
-        logger.error(f"❌ 后台清理维护任务异常: {e}")
-
+        logger.error(f"❌ 后台清理维护任务异常: {e}", exc_info=True)
 
 async def watch_symbol_position(exchange, symbol, config):
     """单仓位的 WebSocket 实时监控守护协程"""
