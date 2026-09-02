@@ -304,6 +304,13 @@
     "n3_bars": 83,
     "tier1_ratio": 0.2,
     "tier2_ratio": 0.3,
-    "exchange_buffer_pct": 0.01
+    "exchange_buffer_pct": 0.01,
+    "auto_reset_state_on_add": true,
+    "sync_exchange_stop_on_reduce": true,
+    "take_profit": {
+      "enabled": false,
+      "mode": "rr_ratio",
+      "risk_reward_ratio": 2.0
+    }
   }
 }
