@@ -10,7 +10,7 @@ import asyncio
 import json
 import os
 import uuid
-from datetime import time
+import time  # 确保文件顶部导入了 time 模块
 from pathlib import Path
 
 import ccxt.pro as ccxtpro
