@@ -253,7 +253,7 @@
   },
   "periodic_reports": [
     {
-      "enabled": true,
+      "enabled": false,
       "report_name": "4小时热点报告",
       "run_interval": "4h",
       "top_n_by_volume": 300,
@@ -269,7 +269,7 @@
       }
     },
     {
-      "enabled": true,
+      "enabled": false,
       "report_name": "每日宏观复盘",
       "run_interval": "1d",
       "top_n_by_volume": 300,

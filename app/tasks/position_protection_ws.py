@@ -263,8 +263,9 @@ async def cleanup_orphaned_state_and_orders(exchange):
     except Exception as e:
         logger.error(f"❌ 后台清理维护任务异常: {e}", exc_info=True)
 
+
 async def watch_symbol_position(exchange, symbol, config):
-    """单仓位的 WebSocket 实时监控守护协程"""
+    """单仓位的 WebSocket 实时监控守护协程（带防限流节流机制）"""
     conf = config.get("position_protection", {})
     atr_conf = conf.get("atr", {})
     timeframe = str(atr_conf.get("timeframe", "1h"))
@@ -274,15 +275,18 @@ async def watch_symbol_position(exchange, symbol, config):
     min_percent = float(atr_conf.get("min_percent", 0.01))
     max_percent = float(atr_conf.get("max_percent", 0.06))
 
-    logger.info(f"🔌 启动 WebSocket 实时监控：{symbol} (基于 5m K线闭环确认)")
+    logger.info(f"🔌 启动 WebSocket 实时监控协程：{symbol}")
 
     while True:
         try:
+            # 1. 每次循环前加入短暂延时，错开各币种的请求峰值，防止触发 429
+            await asyncio.sleep(2)
+
             positions = await exchange.fetch_positions([symbol])
             pos = next((p for p in positions if _position_size(p) > 0 and _position_side(p) in ("long", "short")), None)
 
             if not pos:
-                logger.info(f"🧹 {symbol} 仓位已平，退出 WebSocket 监控。")
+                logger.info(f"🧹 [{symbol}] 检测到仓位已平或不存在，退出 WebSocket 监控。")
                 state = _load_state()
                 for k in list(state.keys()):
                     if symbol in k:
@@ -299,20 +303,27 @@ async def watch_symbol_position(exchange, symbol, config):
 
             raw_dist = atr * multiplier / entry
             distance_pct = max(min_percent, min(raw_dist, max_percent))
-            smart_stop_price = float(exchange.price_to_precision(symbol, entry * (1 - distance_pct) if side == "long" else entry * (1 + distance_pct)))
+            smart_stop_price = float(exchange.price_to_precision(symbol, entry * (
+                        1 - distance_pct) if side == "long" else entry * (1 + distance_pct)))
 
             ex_dist = max(min_percent, min(atr * (multiplier + exchange_buffer) / entry, max_percent))
-            exchange_target_stop = float(exchange.price_to_precision(symbol, entry * (1 - ex_dist) if side == "long" else entry * (1 + ex_dist)))
+            exchange_target_stop = float(
+                exchange.price_to_precision(symbol, entry * (1 - ex_dist) if side == "long" else entry * (1 + ex_dist)))
 
+            # 检查交易所当前的兜底止损单
             stops = await _find_stop_orders(exchange, symbol, side, pos)
             existing_stop, existing_order = _select_existing_stop(stops, side)
 
             if existing_stop is None:
+                logger.warning(f"⚠️ [{symbol}] 检查发现交易所当前【没有】有效的兜底止损单，正在立即补挂...")
                 await _create_stop(exchange, symbol, pos, side, exchange_target_stop)
-                logger.success(f"🛡️ {symbol} 建立交易所兜底止损：{exchange_target_stop}")
 
-            # 实时监听 5分钟 K 线流
-            ohlcvs = await exchange.watch_ohlcv(symbol, '5m')
+            # 实时监听 5分钟 K 线流（设置 10 秒超时）
+            try:
+                ohlcvs = await asyncio.wait_for(exchange.watch_ohlcv(symbol, '5m'), timeout=10)
+            except asyncio.TimeoutError:
+                continue
+
             if not ohlcvs:
                 continue
 
@@ -323,7 +334,8 @@ async def watch_symbol_position(exchange, symbol, config):
                          (side == "short" and close_price >= smart_stop_price)
 
             if is_touched:
-                logger.warning(f"🚨 {symbol} 实时 WebSocket 检测到价格触及内层线！触发收盘确认。收盘价: {close_price}, 止损线: {smart_stop_price}")
+                logger.warning(
+                    f"🚨 [{symbol}] 实时 WebSocket 确认破位！收盘价: {close_price} 触及内层止损线: {smart_stop_price}，立即执行市价平仓！")
 
                 await exchange.create_market_order(
                     symbol,
@@ -336,12 +348,16 @@ async def watch_symbol_position(exchange, symbol, config):
                 break
 
         except ccxtpro.NetworkError as ne:
-            logger.warning(f"⚠️ {symbol} WebSocket 网络抖动，正在自动重连: {ne}")
+            logger.warning(f"⚠️ [{symbol}] WebSocket 网络抖动，5秒后自动重连: {ne}")
             await asyncio.sleep(5)
         except Exception as e:
-            logger.error(f"❌ {symbol} WebSocket 监控异常: {e}", exc_info=True)
-            await asyncio.sleep(5)
-
+            err_msg = str(e)
+            if "429" in err_msg or "-1003" in err_msg:
+                logger.warning(f"⚠️ [{symbol}] 触发币安频次限制 (429)，自动冷却 15 秒后重试...")
+                await asyncio.sleep(15)
+            else:
+                logger.error(f"❌ [{symbol}] WebSocket 监控异常: {e}", exc_info=True)
+                await asyncio.sleep(5)
 
 async def protect_positions_main(exchange, config):
     """主任务：动态扫描活跃持仓启动 WebSocket 协程，并定时执行历史/孤儿订单清理"""
