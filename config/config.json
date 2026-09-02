@@ -301,7 +301,8 @@
     "atr": {
       "timeframe": "1h",
       "period": 14,
-      "multiplier": 2.0,
+      "multiplier": 1.5,
+      "exchange_buffer_multiplier": 1,
       "min_percent": 0.015,
       "max_percent": 0.08
     },
@@ -309,5 +310,6 @@
       "enabled": true,
       "activation_atr": 1.5
     }
-  }
+  },
+
 }

@@ -8,19 +8,19 @@ if platform.system() == "Windows":
         """一个模拟模块，提供一个空的 pread 函数来满足导入需求"""
 
         def pread(self, *args, **kwargs):
-            # 这是一个空函数，什么也不做
             pass
 
 
-    # 将这个模拟类的实例作为 'posix' 模块放入缓存
     sys.modules['posix'] = FakePosix()
 # ^-- 补丁结束 --^
 
 import signal
 import threading
 import os
+import asyncio
 
 import ccxt
+import ccxt.pro as ccxtpro
 from apscheduler.schedulers.blocking import BlockingScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
@@ -32,7 +32,7 @@ from app.services.notification_service import notification_consumer
 from app.state import load_alert_states, save_alert_states
 from app.tasks.periodic_reporter import run_periodic_report
 from app.tasks.signal_scanner import run_signal_check_cycle
-from app.tasks.position_protection import protect_positions
+from app.tasks.position_protection_ws import protect_positions_main
 from app.utils import timeframe_to_minutes
 
 
@@ -44,12 +44,12 @@ def handle_exit(signum, frame):
 
 
 def main():
-    signal.signal(signal.SIGINT, handle_exit);
+    signal.signal(signal.SIGINT, handle_exit)
     signal.signal(signal.SIGTERM, handle_exit)
     try:
         config = load_config()
     except (FileNotFoundError, ValueError) as e:
-        print(f"错误: {e}");
+        print(f"错误: {e}")
         return
     logger = setup_logging(config.get('app_settings', {}).get("log_level", "INFO"))
 
@@ -64,7 +64,6 @@ def main():
             }
         }
 
-        # 账户 API 密钥从环境变量读取，不写入 config.json。
         api_key = os.getenv('BINANCE_API_KEY')
         api_secret = os.getenv('BINANCE_API_SECRET')
         if api_key and api_secret:
@@ -75,33 +74,62 @@ def main():
 
         exchange = getattr(ccxt, app_conf.get('exchange'))(exchange_kwargs)
     except (AttributeError, KeyError) as e:
-        logger.error(f"❌ 初始化交易所失败: 配置错误或交易所不支持 - {e}");
+        logger.error(f"❌ 初始化交易所失败: 配置错误或交易所不支持 - {e}")
         return
     except Exception as e:
-        logger.error(f"❌ 初始化交易所时发生未知错误: {e}", exc_info=True);
+        logger.error(f"❌ 初始化交易所时发生未知错误: {e}", exc_info=True)
         return
 
     logger.info("🚀 终极监控与信号程序已启动")
     logger.info(
         f"📊 交易所: {app_conf.get('exchange')} | 市场: {app_conf.get('default_market_type')} | 间隔: {app_conf.get('check_interval_minutes')} 分钟")
 
-    # 首次启动立即执行仓位保护，优先于主信号扫描，避免启动阶段出现未保护仓位。
-    protection_conf = config.get('position_protection', {})
-    if protection_conf.get('enabled', True):
-        logger.info("\n🛡️ 首次启动：立即执行一次仓位保护检查...")
-        try:
-            protect_positions(exchange, config)
-        except Exception as e:
-            logger.error(f"❌ 首次仓位保护检查失败：{e}", exc_info=True)
-
     consumer_thread = threading.Thread(target=notification_consumer, daemon=True)
     consumer_thread.start()
     logger.info("✅ 通知队列消费者线程已启动。")
 
+    # 启动 WebSocket 实时仓位保护后台独立线程
+    def run_ws_protection_thread(app_conf_arg, config_arg):
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+
+        async def _start():
+            ex_kwargs = {
+                'enableRateLimit': True,
+                'options': {'defaultType': app_conf_arg.get('default_market_type')}
+            }
+            ak = os.getenv('BINANCE_API_KEY')
+            as_sec = os.getenv('BINANCE_API_SECRET')
+            if ak and as_sec:
+                ex_kwargs['apiKey'] = ak
+                ex_kwargs['secret'] = as_sec
+
+            async_exchange = getattr(ccxtpro, app_conf_arg.get('exchange'))(ex_kwargs)
+            try:
+                await protect_positions_main(async_exchange, config_arg)
+            finally:
+                await async_exchange.close()
+
+        try:
+            loop.run_until_complete(_start())
+        except Exception as e:
+            logger.error(f"❌ WebSocket 仓位保护线程异常退出: {e}", exc_info=True)
+        finally:
+            loop.close()
+
+    protection_conf = config.get('position_protection', {})
+    if protection_conf.get('enabled', True):
+        ws_thread = threading.Thread(
+            target=run_ws_protection_thread,
+            args=(app_conf, config),
+            daemon=True
+        )
+        ws_thread.start()
+        logger.info("   - 🛡️ WebSocket 实时仓位保护后台线程已启动。")
+
     logger.info("\n📌 首次运行主监控循环...")
     run_signal_check_cycle(exchange, config)
 
-    # 首次运行时，为所有启用的报告都运行一次
     report_configs = config.get('periodic_reports', [])
     if report_configs:
         logger.info("\n📌 首次运行所有已启用的市场报告...")
@@ -128,13 +156,10 @@ def main():
                     continue
 
                 if run_interval_str == '1d':
-                    # 日报，在北京时间每天早上8点运行
-                    # 关键修改：显式添加 timezone='Asia/Shanghai'
                     trigger = CronTrigger(hour='8', minute='0', second='10', timezone='Asia/Shanghai')
-                else:  # 小时报告
+                else:
                     run_interval_hours = run_interval_minutes // 60
                     trigger_hours = ",".join([str(h) for h in range(0, 24, run_interval_hours)])
-                    # 关键修改：显式添加 timezone='Asia/Shanghai'
                     trigger = CronTrigger(hour=trigger_hours, minute='0', second='10', timezone='Asia/Shanghai')
 
                 scheduler.add_job(run_periodic_report,
@@ -147,21 +172,6 @@ def main():
     scheduler.add_job(run_signal_check_cycle, IntervalTrigger(minutes=interval_minutes), args=[exchange, config],
                       name="SignalCheckCycle", max_instances=1, coalesce=True)
     logger.info(f"   - 动态热点监控任务已添加，每 {interval_minutes} 分钟运行一次。")
-
-    # 独立的仓位保护任务：始终每 5 分钟检查一次，不受主策略扫描周期影响。
-    if protection_conf.get('enabled', True):
-        protection_interval = int(protection_conf.get('interval_minutes', 5))
-        scheduler.add_job(
-            protect_positions,
-            IntervalTrigger(minutes=protection_interval),
-            args=[exchange, config],
-            name='PositionProtection',
-            max_instances=1,
-            coalesce=True,
-        )
-        logger.info(
-            f"   - 🛡️ ATR仓位保护任务已添加，每 {protection_interval} 分钟检查一次。"
-        )
 
     logger.info(f"\n📅 调度器已启动，请保持程序运行。按 Ctrl+C 退出。")
     try:

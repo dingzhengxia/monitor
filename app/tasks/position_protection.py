@@ -1,4 +1,4 @@
-"""Binance USDⓈ-M Futures ATR position protection.
+"""Binance USDⓈ-M Futures ATR position protection with anti-spike double-layer architecture.
 
 Protection rules for this project:
 - Check positions every 5 minutes (configurable).
@@ -16,10 +16,8 @@ Protection rules for this project:
   synchronized to the new position size.
 - Existing stop orders are respected when the bot first takes over a position.
 - Binance USDⓈ-M Futures conditional orders use the Algo Order API.
-
-The state file is deliberately written directly instead of atomically replacing
-it, because it is bind-mounted as a single file by Docker; replacing a bind
-mount point with os.replace() can fail on Linux.
+- Anti-spike feature: Inner layer uses 5m close price confirmation to filter wicks,
+  outer layer maintains a wider exchange order as a disaster backup.
 """
 
 import json
@@ -110,7 +108,7 @@ def _entry_price(position):
 
 def _mark_or_last(position, exchange, symbol):
     info = position.get("info") or {}
-    for key in ("markPrice", "markPrice", "lastPrice"):
+    for key in ("markPrice", "lastPrice"):
         value = _f(position.get(key))
         if value and value > 0:
             return value
@@ -227,7 +225,6 @@ def _is_stop_loss_algo(order, side, position_side, current_price):
     if trigger is None or current_price is None:
         return True
 
-    # A stop-loss for a long must be below current price; for a short it must be above.
     return trigger < current_price if side == "long" else trigger > current_price
 
 
@@ -247,7 +244,6 @@ def _select_existing_stop(stops, side):
     valid = [(_algo_trigger(o), o) for o in stops if _algo_trigger(o) is not None]
     if not valid:
         return None, None
-    # Tightest currently active stop is the most protective one.
     if side == "long":
         price, order = max(valid, key=lambda item: item[0])
     else:
@@ -281,8 +277,6 @@ def _cancel_stop_orders(exchange, symbol, stops):
 
 
 def _make_client_algo_id(symbol, side):
-    # Binance allows [A-Za-z0-9_.:/-], max 36 chars. UUID avoids collisions
-    # when multiple replacement orders are created in the same millisecond.
     compact = symbol.replace("/", "").replace(":", "")
     suffix = "L" if side == "long" else "S"
     value = f"{CLIENT_ALGO_PREFIX}{compact}_{suffix}_{uuid.uuid4().hex[:8]}"
@@ -310,7 +304,6 @@ def _create_stop(exchange, symbol, position, side, stop_price):
         "clientAlgoId": _make_client_algo_id(symbol, side),
     }
 
-    # Binance explicitly forbids reduceOnly in Hedge Mode; in One-way Mode it is valid.
     if raw_ps == "BOTH":
         params["reduceOnly"] = "true"
 
@@ -319,18 +312,10 @@ def _create_stop(exchange, symbol, position, side, stop_price):
 
 
 def _replace_stop(exchange, symbol, position, side, stops, new_stop):
-    """Create the replacement first, then remove old stops.
-
-    Creating first avoids a naked position if the replacement request succeeds
-    but cancellation fails. Both orders are reduce-only/position-closing stops,
-    so a brief overlap is safer than a gap in protection.
-    """
     order = _create_stop(exchange, symbol, position, side, new_stop)
     try:
         _cancel_stop_orders(exchange, symbol, stops)
     except Exception:
-        # Replacement exists, so protection is still present. Leave the new stop
-        # in place and surface the error for visibility.
         logger.error(
             f"⚠️ {symbol} 新止损已创建，但旧止损未全部取消；请检查 Binance Algo Orders。",
             exc_info=True,
@@ -340,12 +325,6 @@ def _replace_stop(exchange, symbol, position, side, stops, new_stop):
 
 def _notify_stop_change(config, symbol, side, reason, current_price, entry_price,
                        old_stop, new_stop, atr=None, contracts=None, extra=None):
-    """Queue a DingTalk notification for an actual stop/order change.
-
-    Notification failures must never interrupt stop-loss management because
-    send_alert() only queues the message and the consumer sends it in the
-    background.
-    """
     try:
         side_cn = "多仓" if side == "long" else "空仓"
         lines = [
@@ -381,8 +360,6 @@ def _changed_for_addition(previous, contracts, entry):
     if contracts > old_contracts + max(abs(old_contracts), 1.0) * 1e-8:
         return True
 
-    # If average entry changes while position size does not materially decrease,
-    # this is consistent with an add/rebalance between checks.
     if old_entry and entry and abs(entry - old_entry) / old_entry > 1e-8:
         return contracts >= old_contracts * 0.99
 
@@ -406,6 +383,10 @@ def _normalize_config(config):
     timeframe = str(atr_conf.get("timeframe", "1h"))
     period = max(2, int(atr_conf.get("period", 14)))
     multiplier = float(atr_conf.get("multiplier", 2.0))
+
+    # 交易所外层兜底单的额外安全垫倍数（在主 ATR 基础上多加 0.5 倍，确保不轻易被日常插针误杀）
+    exchange_buffer = float(atr_conf.get("exchange_buffer_multiplier", 0.5))
+
     min_percent = float(atr_conf.get("min_percent", 0.015))
     max_percent = float(atr_conf.get("max_percent", 0.08))
     activation_atr = float(trailing_conf.get("activation_atr", 1.5))
@@ -415,12 +396,12 @@ def _normalize_config(config):
     if not (0 < min_percent <= max_percent):
         raise ValueError("position_protection min_percent / max_percent 配置无效")
 
-    return conf, timeframe, period, multiplier, min_percent, max_percent, activation_atr
+    return conf, timeframe, period, multiplier, exchange_buffer, min_percent, max_percent, activation_atr
 
 
 def protect_positions(exchange, config):
     try:
-        conf, timeframe, period, multiplier, min_percent, max_percent, activation_atr = _normalize_config(config)
+        conf, timeframe, period, multiplier, exchange_buffer, min_percent, max_percent, activation_atr = _normalize_config(config)
     except Exception as e:
         logger.error(f"❌ 仓位保护配置无效：{e}")
         return
@@ -456,21 +437,17 @@ def protect_positions(exchange, config):
 
     for key in list(state.keys()):
         if key not in active_keys:
-            # 1. 发现仓位已平，提取之前记录的止损单 ID
             old_state = state[key]
             algo_id = old_state.get("stop_algo_id")
-            symbol_from_key = key.split('|')[0] 
-            
+            symbol_from_key = key.split('|')[0]
+
             if algo_id:
                 try:
-                    # 调用现有的撤单接口
                     _cancel_algo(exchange, symbol_from_key, algo_id)
                     logger.info(f"🧹 {symbol_from_key} 仓位已平，已成功清理遗留的保护止损单 (AlgoId: {algo_id})")
                 except Exception as e:
-                    # 吞掉异常：如果止损单是被触发平仓的，它在交易所已失效
                     logger.debug(f"ℹ️ {symbol_from_key} 遗留止损单清理跳过 (可能已被触发或手动撤销): {e}")
-            
-            # 2. 从本地状态字典中安全删除
+
             del state[key]
 
     if not active:
@@ -493,9 +470,47 @@ def protect_positions(exchange, config):
 
             atr = _atr(exchange, symbol, timeframe, period)
             distance_pct = _distance_percent(atr, entry, multiplier, min_percent, max_percent)
+
+            # 【双层架构计算】
+            # 1. 内层智能止损线（用于本地 K 线收盘确认防插针）
+            smart_stop_price = _price_to_precision(exchange, symbol, _initial_stop(entry, side, distance_pct))
+
+            # 2. 外层交易所兜底止损线（向外放宽安全垫，供交易所挂单兜底）
+            exchange_distance_pct = _distance_percent(atr, entry, multiplier + exchange_buffer, min_percent, max_percent)
+            exchange_target_stop = _price_to_precision(exchange, symbol, _initial_stop(entry, side, exchange_distance_pct))
+
             stops = _find_stop_orders(exchange, symbol, side, position, current_price)
             previous = state.get(key)
             is_add = _changed_for_addition(previous, contracts, entry)
+
+            # 【核心层 1：本地防插针收盘确认检查】
+            is_touched_smart = (side == "long" and current_price <= smart_stop_price) or \
+                               (side == "short" and current_price >= smart_stop_price)
+            if is_touched_smart and previous is not None:
+                try:
+                    recent_k = exchange.fetch_ohlcv(symbol, '5m', limit=2)
+                    closed_close_price = _f(recent_k[-2][4]) if recent_k and len(recent_k) >= 2 else current_price
+                except Exception:
+                    closed_close_price = current_price
+
+                is_closed_broken = (side == "long" and closed_close_price <= smart_stop_price) or \
+                                   (side == "short" and closed_close_price >= smart_stop_price)
+
+                if is_closed_broken:
+                    logger.warning(f"🚨 {symbol} {side} 本地收盘确认破位！收盘价: {closed_close_price} 智能止损线: {smart_stop_price}")
+                    exchange.create_market_order(
+                        symbol,
+                        'sell' if side == "long" else 'buy',
+                        contracts,
+                        params={"reduceOnly": True, "positionSide": raw_ps} if raw_ps != "BOTH" else {"reduceOnly": True}
+                    )
+                    if stops:
+                        _cancel_stop_orders(exchange, symbol, stops)
+                    state.pop(key, None)
+                    _save_state(state)
+                    continue
+                else:
+                    logger.info(f"🛡️ {symbol} {side} 遭遇插针但已成功收回！实时触碰内层线，但5分钟收盘价({closed_close_price})安全，完美过滤。")
 
             if is_add:
                 logger.warning(
@@ -503,15 +518,15 @@ def protect_positions(exchange, config):
                     f"新仓位={contracts}, 新均价={entry}。完全重置止损周期。"
                 )
 
-                stop_price = _price_to_precision(exchange, symbol, _initial_stop(entry, side, distance_pct))
-                order = _replace_stop(exchange, symbol, position, side, stops, stop_price) if stops else _create_stop(
-                    exchange, symbol, position, side, stop_price
+                order = _replace_stop(exchange, symbol, position, side, stops, exchange_target_stop) if stops else _create_stop(
+                    exchange, symbol, position, side, exchange_target_stop
                 )
                 state[key] = {
                     "version": STATE_VERSION,
                     "contracts": contracts,
                     "entry_price": entry,
-                    "stop_price": stop_price,
+                    "stop_price": exchange_target_stop,
+                    "smart_stop_price": smart_stop_price,
                     "trailing_active": False,
                     "extreme_price": current_price,
                     "last_reset_ts": int(time.time()),
@@ -520,29 +535,28 @@ def protect_positions(exchange, config):
                     "stop_client_algo_id": order.get("clientAlgoId"),
                 }
                 logger.success(
-                    f"✅ {symbol} {side} 加仓后已重置：entry={entry}, ATR={atr:.8g}, "
-                    f"distance={distance_pct:.2%}, stop={stop_price}, algoId={order.get('algoId')}"
+                    f"✅ {symbol} {side} 加仓后已重置：entry={entry}, 交易所兜底止损={exchange_target_stop}, algoId={order.get('algoId')}"
                 )
                 _notify_stop_change(
                     config, symbol, side, "重置",
                     current_price=current_price,
                     entry_price=entry,
                     old_stop=_select_existing_stop(stops, side)[0] if stops else None,
-                    new_stop=stop_price,
+                    new_stop=exchange_target_stop,
                     atr=atr,
                     contracts=contracts,
-                    extra="检测到加仓，旧止损保护周期已重置，并按新的平均开仓价重新计算。",
+                    extra="检测到加仓，保护周期已重置，并更新放宽的交易所兜底止损。",
                 )
                 continue
 
-            # First time the bot sees this position: respect an existing stop.
             if previous is None:
                 existing_stop, existing_order = _select_existing_stop(stops, side)
                 state[key] = {
                     "version": STATE_VERSION,
                     "contracts": contracts,
                     "entry_price": entry,
-                    "stop_price": existing_stop,
+                    "stop_price": existing_stop or exchange_target_stop,
+                    "smart_stop_price": smart_stop_price,
                     "trailing_active": False,
                     "extreme_price": current_price,
                     "last_reset_ts": int(time.time()),
@@ -557,34 +571,31 @@ def protect_positions(exchange, config):
                     )
                     continue
 
-                stop_price = _price_to_precision(exchange, symbol, _initial_stop(entry, side, distance_pct))
-                order = _create_stop(exchange, symbol, position, side, stop_price)
-                state[key]["stop_price"] = stop_price
+                order = _create_stop(exchange, symbol, position, side, exchange_target_stop)
+                state[key]["stop_price"] = exchange_target_stop
                 state[key]["stop_algo_id"] = order.get("algoId")
                 state[key]["stop_client_algo_id"] = order.get("clientAlgoId")
                 logger.success(
-                    f"🛡️ {symbol} {side} 首次添加止损：entry={entry}, ATR={atr:.8g}, "
-                    f"distance={distance_pct:.2%}, stop={stop_price}, algoId={order.get('algoId')}"
+                    f"🛡️ {symbol} {side} 首次添加交易所兜底止损：{exchange_target_stop}, algoId={order.get('algoId')}"
                 )
                 _notify_stop_change(
                     config, symbol, side, "建立",
                     current_price=current_price,
                     entry_price=entry,
                     old_stop=None,
-                    new_stop=stop_price,
+                    new_stop=exchange_target_stop,
                     atr=atr,
                     contracts=contracts,
-                    extra="发现仓位没有止损，已自动建立初始保护止损。",
+                    extra="发现仓位没有止损，已自动建立交易所兜底保护单。",
                 )
                 continue
 
-            # Keep state synchronized with current position size and average entry.
             old_contracts = _f(previous.get("contracts"), contracts)
             previous["contracts"] = contracts
             previous["entry_price"] = entry
+            previous["smart_stop_price"] = smart_stop_price
             previous["last_check_ts"] = int(time.time())
 
-            # Track the most favorable observed price for Chandelier-style trailing.
             extreme = _f(previous.get("extreme_price"), current_price)
             if side == "long":
                 extreme = max(extreme, current_price)
@@ -595,9 +606,7 @@ def protect_positions(exchange, config):
             existing_stop, existing_order = _select_existing_stop(stops, side)
             remembered_stop = _f(previous.get("stop_price"))
             if existing_stop is None:
-                # Stop disappeared: recreate immediately. Prefer remembered stop;
-                # if state has none, fall back to a fresh initial stop.
-                replacement = remembered_stop or _initial_stop(entry, side, distance_pct)
+                replacement = remembered_stop or exchange_target_stop
                 replacement = _price_to_precision(exchange, symbol, replacement)
                 order = _create_stop(exchange, symbol, position, side, replacement)
                 previous["stop_price"] = replacement
@@ -615,12 +624,10 @@ def protect_positions(exchange, config):
                     new_stop=replacement,
                     atr=atr,
                     contracts=contracts,
-                    extra="程序状态显示原有止损存在，但交易所未找到保护单，已立即重建。",
+                    extra="交易所未找到保护单，已立即重建兜底单。",
                 )
                 continue
 
-            # If the position was reduced, synchronize stop quantity while keeping
-            # the existing stop price and trailing state unchanged.
             quantity_changed = old_contracts > contracts * 1.00000001
             existing_qty = _algo_quantity(existing_order) if existing_order else None
             qty_changed_on_exchange = existing_qty is not None and abs(existing_qty - contracts) > max(1e-12, contracts * 1e-8)
@@ -671,19 +678,16 @@ def protect_positions(exchange, config):
                     f"🚀 {symbol} {side} 已达到 {activation_atr:.2f} ATR，启动移动止损。"
                 )
 
-            candidate = _trailing_stop_from_extreme(extreme, side, atr, multiplier)
+            # 移动止损触发时，同步推高/压低交易所的兜底单价格
+            candidate = _trailing_stop_from_extreme(extreme, side, atr, multiplier + exchange_buffer)
             candidate = _price_to_precision(exchange, symbol, candidate)
 
-            # Enforce the configured absolute distance bounds for the trailing stop.
-            # For long: candidate cannot be farther than max_percent from the extreme,
-            # and cannot be tighter than min_percent. For short the direction reverses.
-            trail_pct = _distance_percent(atr, extreme, multiplier, min_percent, max_percent)
+            trail_pct = _distance_percent(atr, extreme, multiplier + exchange_buffer, min_percent, max_percent)
             bounded_candidate = (
                 extreme * (1 - trail_pct) if side == "long" else extreme * (1 + trail_pct)
             )
             candidate = _price_to_precision(exchange, symbol, bounded_candidate)
 
-            # Never move a stop in the losing direction.
             should_move = (
                 candidate > existing_stop + 1e-12
                 if side == "long"
@@ -698,8 +702,8 @@ def protect_positions(exchange, config):
                 continue
 
             logger.info(
-                f"📈 {symbol} {side} 移动止损：{existing_stop} -> {candidate} | "
-                f"当前价={current_price} 极值={extreme} ATR={atr:.8g} 距离={trail_pct:.2%}"
+                f"📈 {symbol} {side} 移动交易所兜底止损：{existing_stop} -> {candidate} | "
+                f"当前价={current_price} 极值={extreme} ATR={atr:.8g}"
             )
 
             order = _replace_stop(exchange, symbol, position, side, stops, candidate)
@@ -708,7 +712,7 @@ def protect_positions(exchange, config):
             previous["stop_client_algo_id"] = order.get("clientAlgoId")
             state[key] = previous
             logger.success(
-                f"✅ {symbol} {side} 止损已向盈利方向移动：{candidate} | algoId={order.get('algoId')}"
+                f"✅ {symbol} {side} 交易所兜底止损已更新：{candidate} | algoId={order.get('algoId')}"
             )
             _notify_stop_change(
                 config, symbol, side, "移动",
@@ -718,7 +722,7 @@ def protect_positions(exchange, config):
                 new_stop=candidate,
                 atr=atr,
                 contracts=contracts,
-                extra=f"盈利已达到 {activation_atr:.2f} ATR 后启动单向移动止损；止损只向盈利方向移动。",
+                extra=f"盈利达到激活线，交易所兜底止损同步单向移动。",
             )
 
         except Exception as e:
