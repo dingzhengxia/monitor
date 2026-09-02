@@ -1,9 +1,7 @@
-"""Binance USDⓈ-M Futures ATR position protection with WebSocket real-time kline stream.
+"""Binance USDⓈ-M Futures Multi-Tier & ATR Position Protection (JSON Config Driven).
 
-- Inner layer: Uses asyncio and ccxt.pro to watch 5-minute kline websocket stream in real-time.
-- Candle close confirmation: Instantly triggers market close upon candle close (x: true) breakout.
-- Outer layer: Maintains a wider exchange-side STOP_MARKET order as a disaster recovery backup.
-- Maintenance: Cleans up obsolete state records and orphaned orders periodically with verbose logging.
+- Config Source: Reads directly from local `config.json`.
+- Features: 3-Tier Swing High/Low protection, ATR Stop, Trailing Stop, and Exchange Hard Stop-Loss.
 """
 
 import asyncio
@@ -20,8 +18,56 @@ from loguru import logger
 from app.services.notification_service import send_alert
 
 STATE_FILE = Path("position_protection_state.json")
-STATE_VERSION = 3
+CONFIG_FILE = Path("config.json")
 CLIENT_ALGO_PREFIX = "PM_WS_SL_"
+
+DEFAULT_CONFIG = {
+    "position_protection": {
+        "enabled": True,
+        "interval_minutes": 5,
+        "stop_mode": "swing_levels",
+        "timeframe": "1h",
+        "n1_bars": 7,
+        "n2_bars": 26,
+        "n3_bars": 83,
+        "tier1_ratio": 0.2,
+        "tier2_ratio": 0.3,
+        "exchange_buffer_pct": 0.01,
+        "atr": {
+            "period": 14,
+            "multiplier": 1.5,
+            "exchange_buffer_multiplier": 1,
+            "min_percent": 0.015,
+            "max_percent": 0.08
+        },
+        "trailing": {
+            "enabled": True,
+            "activation_atr": 1.5
+        }
+    }
+}
+
+
+def _load_config():
+    """从本地 config.json 读取配置，若不存在则自动初始化默认配置"""
+    if not CONFIG_FILE.exists():
+        try:
+            with CONFIG_FILE.open("w", encoding="utf-8") as f:
+                json.dump(DEFAULT_CONFIG, f, ensure_ascii=False, indent=2)
+            logger.info("📄 已自动生成默认 config.json 配置文件。")
+        except Exception as e:
+            logger.error(f"❌ 无法创建默认 config.json: {e}")
+        return DEFAULT_CONFIG
+
+    try:
+        with CONFIG_FILE.open("r", encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, dict) and "position_protection" in data:
+            return data
+    except Exception as e:
+        logger.warning(f"⚠️ 读取 config.json 失败，使用默认配置: {e}")
+
+    return DEFAULT_CONFIG
 
 
 def _f(value, default=None):
@@ -41,7 +87,7 @@ def _load_state():
     except FileNotFoundError:
         return {}
     except Exception as e:
-        logger.warning(f"⚠️ 无法读取仓位保护状态文件：{e}，将使用空状态。")
+        logger.warning(f"⚠️ 无法读取状态文件：{e}")
         return {}
 
 
@@ -52,7 +98,7 @@ def _save_state(state):
             f.flush()
             os.fsync(f.fileno())
     except Exception as e:
-        logger.error(f"❌ 保存仓位保护状态失败：{e}", exc_info=True)
+        logger.error(f"❌ 保存状态失败：{e}", exc_info=True)
 
 
 def _position_side(position):
@@ -75,16 +121,6 @@ def _position_size(position):
         return abs(contracts)
     info = position.get("info") or {}
     return abs(_f(info.get("positionAmt"), 0) or 0)
-
-
-def _entry_price(position):
-    for key in ("entryPrice", "average"):
-        value = _f(position.get(key))
-        if value and value > 0:
-            return value
-    info = position.get("info") or {}
-    value = _f(info.get("entryPrice"))
-    return value if value and value > 0 else None
 
 
 def _raw_position_side(position):
@@ -124,23 +160,17 @@ def _algo_trigger(order):
 def _is_stop_loss_algo(order, side, position_side, current_price):
     if not isinstance(order, dict):
         return False
-    # 状态放宽匹配，兼容不同返回状态
     status = _algo_status(order)
     if status and status not in ("NEW", "TRIGGER_PENDING", "UNTRIGGERED", ""):
         return False
-
-    order_type = str(order.get("orderType") or order.get("type") or "").upper()
-    if order_type != "STOP_MARKET":
+    if str(order.get("orderType") or order.get("type") or "").upper() != "STOP_MARKET":
         return False
-
     expected_side = "SELL" if side == "long" else "BUY"
     if str(order.get("side") or "").upper() != expected_side:
         return False
-
     order_ps = str(order.get("positionSide") or "BOTH").upper()
     if position_side in ("LONG", "SHORT") and order_ps != position_side:
         return False
-
     trigger = _algo_trigger(order)
     if trigger is None or current_price is None:
         return True
@@ -153,9 +183,7 @@ async def _find_stop_orders(exchange, symbol, side, position, current_price=None
         current_price = _f(ticker.get("mark") or ticker.get("last"))
     raw_ps = _raw_position_side(position)
     orders = await _get_open_algo_orders(exchange, symbol)
-    matched = [o for o in orders if _is_stop_loss_algo(o, side, raw_ps, current_price)]
-    logger.debug(f"🔍 [{symbol}] 查询交易所条件单：总计 {len(orders)} 个，有效兜底单 {len(matched)} 个。")
-    return matched
+    return [o for o in orders if _is_stop_loss_algo(o, side, raw_ps, current_price)]
 
 
 def _select_existing_stop(stops, side):
@@ -179,7 +207,6 @@ async def _cancel_stop_orders(exchange, symbol, stops):
         if algo_id:
             try:
                 await _cancel_algo(exchange, symbol, algo_id)
-                logger.info(f"🗑️ [{symbol}] 成功取消旧的兜底止损单 (AlgoID: {algo_id})")
             except Exception as e:
                 logger.error(f"❌ [{symbol}] 取消旧止损失败: {e}")
 
@@ -210,38 +237,39 @@ async def _create_stop(exchange, symbol, position, side, stop_price):
     if raw_ps == "BOTH":
         params["reduceOnly"] = "true"
 
-    logger.info(f"🛡️ [{symbol}] 正在向交易所提交兜底止损单 | 类型: STOP_MARKET | 方向: {params['side']} | 数量: {qty} | 触发价: {stop_price}")
+    logger.info(f"🛡️ [{symbol}] 提交外部硬止损兜底单 | 方向: {params['side']} | 数量: {qty} | 触发价: {stop_price}")
     response = await exchange.fapiPrivatePostAlgoOrder(params)
-    logger.success(f"✅ [{symbol}] 建立交易所兜底止损成功: {response}")
+    logger.success(f"✅ [{symbol}] 外部硬止损兜底单挂单成功")
     return response
 
 
-async def _calculate_atr_async(exchange, symbol, timeframe, period):
-    limit = max(period + 50, 100)
+async def _calculate_swing_levels_async(exchange, symbol, side, timeframe, n1, n2, n3):
+    """根据可配置周期与 N1/N2/N3 计算高低点：做多取低点(Low)，做空取高点(High)"""
+    limit = max(n3 + 10, 100)
     rows = await exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
-    if not rows or len(rows) < period + 2:
-        raise RuntimeError(f"{symbol} K线不足")
+    if not rows or len(rows) < n3 + 2:
+        raise RuntimeError(f"{symbol} {timeframe} K线数据不足 (需要至少 {n3 + 2} 根)")
+
     df = pd.DataFrame(rows, columns=["timestamp", "open", "high", "low", "close", "volume"])
     if len(df) > 1:
-        df = df.iloc[:-1].copy()
-    prev_close = df["close"].shift(1)
-    tr = pd.concat(
-        [df["high"] - df["low"], (df["high"] - prev_close).abs(), (df["low"] - prev_close).abs()],
-        axis=1,
-    ).max(axis=1)
-    atr = tr.ewm(alpha=1 / period, adjust=False, min_periods=period).mean()
-    value = _f(atr.iloc[-1])
-    if value is None or value <= 0:
-        raise RuntimeError(f"{symbol} ATR 计算错误")
-    return value
+        df = df.iloc[:-1].copy()  # 排除正在运行的当前根 K 线
+
+    if side == "long":
+        t1 = float(df["low"].iloc[-n1:].min())
+        t2 = float(df["low"].iloc[-n2:].min())
+        t3 = float(df["low"].iloc[-n3:].min())
+    else:
+        t1 = float(df["high"].iloc[-n1:].max())
+        t2 = float(df["high"].iloc[-n2:].max())
+        t3 = float(df["high"].iloc[-n3:].max())
+
+    return t1, t2, t3
 
 
 async def cleanup_orphaned_state_and_orders(exchange):
-    logger.info("🧹 [清理任务] 开始执行：检查孤儿状态与残留条件单...")
     try:
         if not exchange.markets:
             await exchange.load_markets()
-
         positions = await exchange.fetch_positions()
         active_symbols = {p["symbol"] for p in positions if _position_size(p) > 0}
 
@@ -260,72 +288,66 @@ async def cleanup_orphaned_state_and_orders(exchange):
                 try:
                     orders = await _get_open_algo_orders(exchange, symbol)
                     for order in orders:
-                        client_id = str(order.get("clientAlgoId") or "")
-                        if client_id.startswith(CLIENT_ALGO_PREFIX):
+                        if str(order.get("clientAlgoId") or "").startswith(CLIENT_ALGO_PREFIX):
                             algo_id = order.get("algoId") or order.get("id")
                             if algo_id:
                                 await _cancel_algo(exchange, symbol, algo_id)
-                                logger.warning(f"🧹 [清理任务] 清理孤儿止损单: {symbol} (AlgoID: {algo_id})")
                 except Exception:
                     pass
     except Exception as e:
         logger.error(f"❌ [清理任务] 异常: {e}", exc_info=True)
 
 
-async def watch_symbol_position(exchange, symbol, config):
-    """单仓位的 WebSocket 实时监控守护协程（带防限流与钉钉通知）"""
-    conf = config.get("position_protection", {})
-    atr_conf = conf.get("atr", {})
-    timeframe = str(atr_conf.get("timeframe", "1h"))
-    period = max(2, int(atr_conf.get("period", 14)))
-    multiplier = float(atr_conf.get("multiplier", 1.5))
-    exchange_buffer = float(atr_conf.get("exchange_buffer_multiplier", 0.5))
-    min_percent = float(atr_conf.get("min_percent", 0.01))
-    max_percent = float(atr_conf.get("max_percent", 0.06))
-
-    logger.info(f"🔌 启动 WebSocket 实时监控协程：{symbol}")
-
+async def watch_symbol_position(exchange, symbol):
+    """从 config.json 读取配置并执行风控守护协程"""
     while True:
         try:
-            await asyncio.sleep(2)
+            full_config = _load_config()
+            conf = full_config.get("position_protection", {})
+            timeframe = str(conf.get("timeframe", "1h"))
+            n1 = int(conf.get("n1_bars", 7))
+            n2 = int(conf.get("n2_bars", 26))
+            n3 = int(conf.get("n3_bars", 83))
+
+            tier1_ratio = float(conf.get("tier1_ratio", 0.2))
+            tier2_ratio = float(conf.get("tier2_ratio", 0.3))
+            buffer_pct = float(conf.get("exchange_buffer_pct", 0.01))
+
+            await asyncio.sleep(5)
 
             positions = await exchange.fetch_positions([symbol])
             pos = next((p for p in positions if _position_size(p) > 0 and _position_side(p) in ("long", "short")), None)
 
+            state = _load_state()
+            state_key = f"{symbol}_{_position_side(pos) if pos else 'none'}"
+
             if not pos:
-                logger.info(f"🧹 [{symbol}] 检测到仓位已平或不存在，退出 WebSocket 监控。")
-                state = _load_state()
-                for k in list(state.keys()):
-                    if symbol in k:
-                        state.pop(k, None)
-                _save_state(state)
+                logger.info(f"🧹 [{symbol}] 持仓已平，退出监控并清理状态。")
+                if state_key in state:
+                    state.pop(state_key, None)
+                    _save_state(state)
                 break
 
             side = _position_side(pos)
-            entry = _entry_price(pos)
             contracts = _position_size(pos)
             raw_ps = _raw_position_side(pos)
 
-            atr = await _calculate_atr_async(exchange, symbol, timeframe, period)
+            t1_val, t2_val, t3_val = await _calculate_swing_levels_async(exchange, symbol, side, timeframe, n1, n2, n3)
 
-            raw_dist = atr * multiplier / entry
-            distance_pct = max(min_percent, min(raw_dist, max_percent))
-            smart_stop_price = float(exchange.price_to_precision(symbol, entry * (1 - distance_pct) if side == "long" else entry * (1 + distance_pct)))
+            if side == "long":
+                exchange_target_stop = float(exchange.price_to_precision(symbol, t3_val * (1 - buffer_pct)))
+            else:
+                exchange_target_stop = float(exchange.price_to_precision(symbol, t3_val * (1 + buffer_pct)))
 
-            ex_dist = max(min_percent, min(atr * (multiplier + exchange_buffer) / entry, max_percent))
-            exchange_target_stop = float(exchange.price_to_precision(symbol, entry * (1 - ex_dist) if side == "long" else entry * (1 + ex_dist)))
-
-            # 检查交易所当前的兜底止损单
             stops = await _find_stop_orders(exchange, symbol, side, pos)
-            existing_stop, existing_order = _select_existing_stop(stops, side)
+            existing_stop, _ = _select_existing_stop(stops, side)
 
             if existing_stop is None:
-                logger.warning(f"⚠️ [{symbol}] 检查发现交易所当前【没有】有效的兜底止损单，正在立即补挂...")
+                logger.warning(f"⚠️ [{symbol}] 交易所缺少硬止损兜底单，正在重新补挂...")
                 await _create_stop(exchange, symbol, pos, side, exchange_target_stop)
 
-            # 实时监听 5分钟 K 线流（设置 10 秒超时）
             try:
-                ohlcvs = await asyncio.wait_for(exchange.watch_ohlcv(symbol, '5m'), timeout=10)
+                ohlcvs = await asyncio.wait_for(exchange.watch_ohlcv(symbol, timeframe), timeout=30)
             except asyncio.TimeoutError:
                 continue
 
@@ -335,50 +357,90 @@ async def watch_symbol_position(exchange, symbol, config):
             latest_candle = ohlcvs[-1]
             close_price = _f(latest_candle[4])
 
-            is_touched = (side == "long" and close_price <= smart_stop_price) or \
-                         (side == "short" and close_price >= smart_stop_price)
+            logger.debug(f"📊 [{symbol}] ({side.upper()}) 巡检 | 收盘价: {close_price} | T1({n1}k): {t1_val} | T2({n2}k): {t2_val} | T3({n3}k): {t3_val}")
 
-            if is_touched:
-                msg = f"🚨 [{symbol}] WebSocket 实时破位平仓警报！\n方向: {side.upper()}\n数量: {contracts}\n收盘价: {close_price}\n触发内层止损线: {smart_stop_price}"
-                logger.warning(msg)
+            pos_state = state.get(state_key, {})
+            t1_done = pos_state.get("t1_done", False)
+            t2_done = pos_state.get("t2_done", False)
 
-                try:
+            if side == "long":
+                if close_price <= t3_val:
+                    msg = f"🚨 [{symbol}] 做多长期极值破位（第三层清算）！\n收盘价: {close_price} 跌破 {n3} 根 K线低点: {t3_val}，执行全仓清算！"
+                    logger.warning(msg)
                     await send_alert(msg)
-                except Exception as notify_err:
-                    logger.error(f"❌ 发送钉钉通知失败: {notify_err}")
+                    await exchange.create_market_order(symbol, 'sell', contracts, params={"reduceOnly": True, "positionSide": raw_ps} if raw_ps != "BOTH" else {"reduceOnly": True})
+                    if stops:
+                        await _cancel_stop_orders(exchange, symbol, stops)
+                    break
+                elif close_price <= t2_val and not t2_done:
+                    reduce_qty = contracts * tier2_ratio
+                    msg = f"⚠️ [{symbol}] 做多中期极值破位（第二层减仓）！\n收盘价: {close_price} 跌破 {n2} 根 K线低点: {t2_val}，减仓 {tier2_ratio*100}%"
+                    logger.warning(msg)
+                    await send_alert(msg)
+                    await exchange.create_market_order(symbol, 'sell', exchange.amount_to_precision(symbol, reduce_qty), params={"reduceOnly": True, "positionSide": raw_ps} if raw_ps != "BOTH" else {"reduceOnly": True})
+                    pos_state["t2_done"] = True
+                    state[state_key] = pos_state
+                    _save_state(state)
+                elif close_price <= t1_val and not t1_done:
+                    reduce_qty = contracts * tier1_ratio
+                    msg = f"💡 [{symbol}] 做多短期极值破位（第一层减仓）！\n收盘价: {close_price} 跌破 {n1} 根 K线低点: {t1_val}，减仓 {tier1_ratio*100}%"
+                    logger.warning(msg)
+                    await send_alert(msg)
+                    await exchange.create_market_order(symbol, 'sell', exchange.amount_to_precision(symbol, reduce_qty), params={"reduceOnly": True, "positionSide": raw_ps} if raw_ps != "BOTH" else {"reduceOnly": True})
+                    pos_state["t1_done"] = True
+                    state[state_key] = pos_state
+                    _save_state(state)
 
-                await exchange.create_market_order(
-                    symbol,
-                    'sell' if side == "long" else 'buy',
-                    contracts,
-                    params={"reduceOnly": True, "positionSide": raw_ps} if raw_ps != "BOTH" else {"reduceOnly": True}
-                )
-                if stops:
-                    await _cancel_stop_orders(exchange, symbol, stops)
-                break
+            elif side == "short":
+                if close_price >= t3_val:
+                    msg = f"🚨 [{symbol}] 做空长期极值破位（第三层清算）！\n收盘价: {close_price} 突破 {n3} 根 K线高点: {t3_val}，执行全仓清算！"
+                    logger.warning(msg)
+                    await send_alert(msg)
+                    await exchange.create_market_order(symbol, 'buy', contracts, params={"reduceOnly": True, "positionSide": raw_ps} if raw_ps != "BOTH" else {"reduceOnly": True})
+                    if stops:
+                        await _cancel_stop_orders(exchange, symbol, stops)
+                    break
+                elif close_price >= t2_val and not t2_done:
+                    reduce_qty = contracts * tier2_ratio
+                    msg = f"⚠️ [{symbol}] 做空中期极值破位（第二层减仓）！\n收盘价: {close_price} 突破 {n2} 根 K线高点: {t2_val}，减仓 {tier2_ratio*100}%"
+                    logger.warning(msg)
+                    await send_alert(msg)
+                    await exchange.create_market_order(symbol, 'buy', exchange.amount_to_precision(symbol, reduce_qty), params={"reduceOnly": True, "positionSide": raw_ps} if raw_ps != "BOTH" else {"reduceOnly": True})
+                    pos_state["t2_done"] = True
+                    state[state_key] = pos_state
+                    _save_state(state)
+                elif close_price >= t1_val and not t1_done:
+                    reduce_qty = contracts * tier1_ratio
+                    msg = f"💡 [{symbol}] 做空短期极值破位（第一层减仓）！\n收盘价: {close_price} 突破 {n1} 根 K线高点: {t1_val}，减仓 {tier1_ratio*100}%"
+                    logger.warning(msg)
+                    await send_alert(msg)
+                    await exchange.create_market_order(symbol, 'buy', exchange.amount_to_precision(symbol, reduce_qty), params={"reduceOnly": True, "positionSide": raw_ps} if raw_ps != "BOTH" else {"reduceOnly": True})
+                    pos_state["t1_done"] = True
+                    state[state_key] = pos_state
+                    _save_state(state)
 
         except ccxtpro.NetworkError as ne:
-            logger.warning(f"⚠️ [{symbol}] WebSocket 网络抖动，5秒后自动重连: {ne}")
+            logger.warning(f"⚠️ [{symbol}] 网络抖动: {ne}")
             await asyncio.sleep(5)
         except Exception as e:
             err_msg = str(e)
             if "429" in err_msg or "-1003" in err_msg:
-                logger.warning(f"⚠️ [{symbol}] 触发币安频次限制 (429)，自动冷却 15 秒后重试...")
+                logger.warning(f"⚠️ [{symbol}] 触发 429 限制，冷却 15 秒...")
                 await asyncio.sleep(15)
             else:
-                logger.error(f"❌ [{symbol}] WebSocket 监控异常: {e}", exc_info=True)
+                logger.error(f"❌ [{symbol}] 监控异常: {e}", exc_info=True)
                 await asyncio.sleep(5)
 
 
-async def protect_positions_main(exchange, config):
-    conf = config.get("position_protection", {})
+async def protect_positions_main(exchange, config=None):
+    full_config = _load_config()
+    conf = full_config.get("position_protection", {})
     if not conf.get("enabled", True):
-        logger.info("🛡️ 仓位保护功能在配置中已禁用 (enabled: false)。")
+        logger.info("🛡️ 仓位保护功能已禁用。")
         return
 
     _algo_methods(exchange)
-
-    logger.info("🛡️ 启动 WebSocket 实时仓位保护主控循环...")
+    logger.info("🛡️ 启动多层极值风控主控循环 (JSON 配置驱动)...")
     await cleanup_orphaned_state_and_orders(exchange)
     last_cleanup_time = time.time()
 
@@ -398,14 +460,12 @@ async def protect_positions_main(exchange, config):
                     symbol = pos.get("symbol")
                     if symbol and symbol not in active_symbols:
                         active_symbols.add(symbol)
-                        tasks.append(asyncio.create_task(watch_symbol_position(exchange, symbol, config)))
+                        tasks.append(asyncio.create_task(watch_symbol_position(exchange, symbol)))
 
             if tasks:
-                logger.info(f"🛡️ 当前有 {len(tasks)} 个活跃持仓正在接受 WebSocket 实时保护监控...")
                 await asyncio.gather(*tasks)
             else:
-                logger.debug("🛡️ 当前无活跃持仓，每 10 秒重新扫描一次持仓...")
                 await asyncio.sleep(10)
         except Exception as e:
-            logger.error(f"❌ WebSocket 主控循环异常: {e}", exc_info=True)
+            logger.error(f"❌ 主控循环异常: {e}", exc_info=True)
             await asyncio.sleep(10)

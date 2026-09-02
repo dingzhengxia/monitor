@@ -297,18 +297,13 @@
   "position_protection": {
     "enabled": true,
     "interval_minutes": 5,
-    "stop_mode": "atr",
-    "atr": {
-      "timeframe": "1h",
-      "period": 14,
-      "multiplier": 1.5,
-      "exchange_buffer_multiplier": 1,
-      "min_percent": 0.015,
-      "max_percent": 0.08
-    },
-    "trailing": {
-      "enabled": true,
-      "activation_atr": 1.5
-    }
+    "stop_mode": "swing_levels",
+    "timeframe": "1h",
+    "n1_bars": 7,
+    "n2_bars": 26,
+    "n3_bars": 83,
+    "tier1_ratio": 0.2,
+    "tier2_ratio": 0.3,
+    "exchange_buffer_pct": 0.01
   }
 }
