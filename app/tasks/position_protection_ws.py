@@ -1,15 +1,14 @@
 """Binance USDⓈ-M Futures ATR position protection with WebSocket real-time kline stream.
 
 - Inner layer: Uses asyncio and ccxt.pro to watch 5-minute kline websocket stream in real-time.
-- Candle close confirmation: Instantly triggers market close upon candle close (x: true) breakout,
-  eliminating polling delays and filtering wicks.
+- Candle close confirmation: Instantly triggers market close upon candle close (x: true) breakout.
 - Outer layer: Maintains a wider exchange-side STOP_MARKET order as a disaster recovery backup.
+- Maintenance: Cleans up obsolete state records and orphaned orders periodically.
 """
 
 import asyncio
 import json
 import os
-import time
 import uuid
 from pathlib import Path
 
@@ -121,10 +120,6 @@ def _algo_trigger(order):
     return _f(order.get("triggerPrice") or order.get("stopPrice"))
 
 
-def _algo_quantity(order):
-    return _f(order.get("quantity") or order.get("origQty"))
-
-
 def _is_stop_loss_algo(order, side, position_side, current_price):
     if not isinstance(order, dict):
         return False
@@ -226,6 +221,45 @@ async def _calculate_atr_async(exchange, symbol, timeframe, period):
     return value
 
 
+async def cleanup_orphaned_state_and_orders(exchange):
+    """【恢复清理逻辑】定期检查并清理无持仓币种残留的本地状态与交易所孤儿条件单"""
+    logger.info("🧹 执行后台清理维护任务：检查孤儿状态与残留条件单...")
+    try:
+        positions = await exchange.fetch_positions()
+        active_symbols = {p["symbol"] for p in positions if _position_size(p) > 0}
+
+        # 1. 清理本地过期的 state 记录
+        state = _load_state()
+        state_modified = False
+        for key in list(state.keys()):
+            # 兼容带有币种名称的记录
+            found_active = any(sym in key for sym in active_symbols)
+            if not found_active and active_symbols:
+                state.pop(key, None)
+                state_modified = True
+        if state_modified:
+            _save_state(state)
+            logger.info("🧹 已清理本地失效的仓位保护状态记录。")
+
+        # 2. 清理没有持仓但挂有本策略前缀条件单的“孤儿订单”
+        markets = exchange.markets
+        for symbol, market in markets.items():
+            if market.get("linear") and symbol not in active_symbols:
+                try:
+                    orders = await _get_open_algo_orders(exchange, symbol)
+                    for order in orders:
+                        client_id = str(order.get("clientAlgoId") or "")
+                        if client_id.startswith(CLIENT_ALGO_PREFIX):
+                            algo_id = order.get("algoId") or order.get("id")
+                            if algo_id:
+                                await _cancel_algo(exchange, symbol, algo_id)
+                                logger.warning(f"🧹 发现无仓位残留的孤儿止损单，已自动清理: {symbol} (AlgoID: {algo_id})")
+                except Exception:
+                    pass
+    except Exception as e:
+        logger.error(f"❌ 后台清理维护任务异常: {e}")
+
+
 async def watch_symbol_position(exchange, symbol, config):
     """单仓位的 WebSocket 实时监控守护协程"""
     conf = config.get("position_protection", {})
@@ -262,12 +296,10 @@ async def watch_symbol_position(exchange, symbol, config):
 
             raw_dist = atr * multiplier / entry
             distance_pct = max(min_percent, min(raw_dist, max_percent))
-            smart_stop_price = float(exchange.price_to_precision(symbol, entry * (
-                        1 - distance_pct) if side == "long" else entry * (1 + distance_pct)))
+            smart_stop_price = float(exchange.price_to_precision(symbol, entry * (1 - distance_pct) if side == "long" else entry * (1 + distance_pct)))
 
             ex_dist = max(min_percent, min(atr * (multiplier + exchange_buffer) / entry, max_percent))
-            exchange_target_stop = float(
-                exchange.price_to_precision(symbol, entry * (1 - ex_dist) if side == "long" else entry * (1 + ex_dist)))
+            exchange_target_stop = float(exchange.price_to_precision(symbol, entry * (1 - ex_dist) if side == "long" else entry * (1 + ex_dist)))
 
             stops = await _find_stop_orders(exchange, symbol, side, pos)
             existing_stop, existing_order = _select_existing_stop(stops, side)
@@ -276,7 +308,7 @@ async def watch_symbol_position(exchange, symbol, config):
                 await _create_stop(exchange, symbol, pos, side, exchange_target_stop)
                 logger.success(f"🛡️ {symbol} 建立交易所兜底止损：{exchange_target_stop}")
 
-            # 监听 5分钟 K 线实时流
+            # 实时监听 5分钟 K 线流
             ohlcvs = await exchange.watch_ohlcv(symbol, '5m')
             if not ohlcvs:
                 continue
@@ -288,8 +320,7 @@ async def watch_symbol_position(exchange, symbol, config):
                          (side == "short" and close_price >= smart_stop_price)
 
             if is_touched:
-                logger.warning(
-                    f"🚨 {symbol} 实时 WebSocket 检测到价格触及内层线！触发收盘确认。收盘价: {close_price}, 止损线: {smart_stop_price}")
+                logger.warning(f"🚨 {symbol} 实时 WebSocket 检测到价格触及内层线！触发收盘确认。收盘价: {close_price}, 止损线: {smart_stop_price}")
 
                 await exchange.create_market_order(
                     symbol,
@@ -310,14 +341,24 @@ async def watch_symbol_position(exchange, symbol, config):
 
 
 async def protect_positions_main(exchange, config):
-    """主任务：动态扫描并为所有活跃持仓并发启动 WebSocket 协程"""
+    """主任务：动态扫描活跃持仓启动 WebSocket 协程，并定时执行历史/孤儿订单清理"""
     conf = config.get("position_protection", {})
     if not conf.get("enabled", True):
         return
 
     _algo_methods(exchange)
+
+    # 启动时先执行一次清理
+    await cleanup_orphaned_state_and_orders(exchange)
+    last_cleanup_time = time.time()
+
     while True:
         try:
+            # 每隔 1 小时执行一次后台清理维护
+            if time.time() - last_cleanup_time > 3600:
+                await cleanup_orphaned_state_and_orders(exchange)
+                last_cleanup_time = time.time()
+
             positions = await exchange.fetch_positions()
             active_symbols = set()
             tasks = []
