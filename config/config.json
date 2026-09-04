@@ -296,7 +296,6 @@
   },
   "position_protection": {
     "enabled": true,
-    "interval_minutes": 5,
     "stop_mode": "moving_averages",
     "timeframe": "1h",
     "n1_bars": 7,
@@ -308,6 +307,9 @@
     "auto_reset_state_on_add": true,
     "sync_exchange_stop_on_reduce": true,
     "trailing_update_threshold_pct": 0.005,
+    "emergency_timeframe": "15m",
+    "emergency_atr_period": 14,
+    "emergency_atr_multiplier": 3.0,
     "take_profit": {
       "enabled": false,
       "mode": "rr_ratio",
