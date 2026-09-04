@@ -297,7 +297,7 @@
   "position_protection": {
     "enabled": true,
     "interval_minutes": 5,
-    "stop_mode": "swing_levels",
+    "stop_mode": "moving_averages",
     "timeframe": "1h",
     "n1_bars": 7,
     "n2_bars": 26,

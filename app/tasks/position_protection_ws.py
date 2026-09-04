@@ -1,9 +1,9 @@
 """Binance USDⓈ-M Futures Multi-Tier & Trailing Position Protection.
 
-- Tier 1/2/3 Internal Stop/Take-Profit Logic
-- Exchange Hard Stop: closePosition=True (Auto covers size changes)
-- Trailing Stop: Automatically updates exchange conditional order to lock in profit.
-- Precise ClientAlgoId Tracking & Robust Cancellation on Position Add / Trailing.
+- Stop Modes: Moving Averages (MA) or Swing Levels
+- Tier 1/2/3 Internal Stop Logic
+- Exchange Hard Stop: closePosition=True
+- Trailing Stop: Automatically updates exchange conditional order.
 """
 
 import asyncio
@@ -17,6 +17,7 @@ import ccxt.pro as ccxtpro
 import pandas as pd
 from loguru import logger
 
+# 引入项目自带的通知接口
 from app.services.notification_service import send_alert
 
 STATE_FILE = Path("position_protection_state.json")
@@ -27,7 +28,7 @@ DEFAULT_CONFIG = {
     "position_protection": {
         "enabled": True,
         "interval_minutes": 5,
-        "stop_mode": "swing_levels",
+        "stop_mode": "moving_averages",  # 默认使用均线模式
         "timeframe": "1h",
         "n1_bars": 7,
         "n2_bars": 26,
@@ -155,60 +156,49 @@ def _algo_trigger(order):
     return _f(order.get("triggerPrice") or order.get("stopPrice"))
 
 
-def _is_script_algo_order(order):
-    """判断某个订单是否是由本程序挂出的风控兜底单"""
+def _is_stop_loss_algo(order, side, position_side, current_price):
     if not isinstance(order, dict):
         return False
     status = _algo_status(order)
-    if status and status not in ("NEW", "WORKING", "TRIGGER_PENDING", "UNTRIGGERED", "OPEN", ""):
+    if status and status not in ("NEW", "TRIGGER_PENDING", "UNTRIGGERED", ""):
         return False
-
-    client_id = str(order.get("clientAlgoId") or "")
-    if client_id.startswith(CLIENT_ALGO_PREFIX):
+    if str(order.get("orderType") or order.get("type") or "").upper() != "STOP_MARKET":
+        return False
+    expected_side = "SELL" if side == "long" else "BUY"
+    if str(order.get("side") or "").upper() != expected_side:
+        return False
+    order_ps = str(order.get("positionSide") or "BOTH").upper()
+    if position_side in ("LONG", "SHORT") and order_ps != position_side:
+        return False
+    trigger = _algo_trigger(order)
+    if trigger is None or current_price is None:
         return True
-
-    # 兜底特征：如果是 closePosition=true 且是 STOP_MARKET
-    is_stop = str(order.get("orderType") or order.get("type") or "").upper() == "STOP_MARKET"
-    is_close_all = str(order.get("closePosition") or "").lower() == "true"
-    return is_stop and is_close_all
+    return trigger < current_price if side == "long" else trigger > current_price
 
 
-async def _get_script_stop_orders(exchange, symbol):
-    """获取交易所上当前属于本程序的所有活跃兜底止损单"""
+async def _find_stop_orders(exchange, symbol, side, position, current_price=None):
+    if current_price is None:
+        ticker = await exchange.fetch_ticker(symbol)
+        current_price = _f(ticker.get("mark") or ticker.get("last"))
+    raw_ps = _raw_position_side(position)
     orders = await _get_open_algo_orders(exchange, symbol)
-    return [o for o in orders if _is_script_algo_order(o)]
+    return [o for o in orders if _is_stop_loss_algo(o, side, raw_ps, current_price)]
 
 
-async def _cancel_script_stop_orders(exchange, symbol):
-    """撤销交易所上所有属于本程序的旧兜底单"""
-    script_stops = await _get_script_stop_orders(exchange, symbol)
-    if not script_stops:
-        return 0
-
+async def _cancel_algo(exchange, symbol, algo_id):
+    _algo_methods(exchange)
     market_id = exchange.market(symbol)["id"]
-    cancelled_count = 0
+    return await exchange.fapiPrivateDeleteAlgoOrder({"symbol": market_id, "algoId": str(algo_id)})
 
-    for order in script_stops:
+
+async def _cancel_stop_orders(exchange, symbol, stops):
+    for order in stops:
         algo_id = order.get("algoId") or order.get("id")
-        client_algo_id = order.get("clientAlgoId")
-
-        params = {"symbol": market_id}
         if algo_id:
             try:
-                params["algoId"] = int(algo_id)
-            except ValueError:
-                params["algoId"] = str(algo_id)
-        elif client_algo_id:
-            params["clientAlgoId"] = str(client_algo_id)
-
-        try:
-            await exchange.fapiPrivateDeleteAlgoOrder(params)
-            cancelled_count += 1
-            logger.info(f"🗑️ [{symbol}] 已成功撤销旧兜底单 (algoId: {algo_id})")
-        except Exception as e:
-            logger.error(f"❌ [{symbol}] 撤销旧兜底单失败 (algoId: {algo_id}): {e}")
-
-    return cancelled_count
+                await _cancel_algo(exchange, symbol, algo_id)
+            except Exception as e:
+                logger.error(f"❌ [{symbol}] 取消旧止损失败: {e}")
 
 
 def _make_client_algo_id(symbol, side):
@@ -240,6 +230,7 @@ async def _create_full_close_stop(exchange, symbol, position, side, stop_price):
     return response
 
 
+# 极值模式 (Swing Levels)
 async def _calculate_swing_levels_async(exchange, symbol, side, timeframe, n1, n2, n3):
     limit = max(n3 + 10, 100)
     rows = await exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
@@ -258,6 +249,28 @@ async def _calculate_swing_levels_async(exchange, symbol, side, timeframe, n1, n
         t1 = float(df["high"].iloc[-n1:].max())
         t2 = float(df["high"].iloc[-n2:].max())
         t3 = float(df["high"].iloc[-n3:].max())
+
+    return t1, t2, t3
+
+
+# 新增: 均线模式 (Moving Averages)
+async def _calculate_ma_levels_async(exchange, symbol, timeframe, n1, n2, n3):
+    limit = max(n3 + 10, 200)
+    rows = await exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
+    if not rows or len(rows) < n3 + 2:
+        raise RuntimeError(f"{symbol} {timeframe} K线数据不足 (需要至少 {n3 + 2} 根)")
+
+    df = pd.DataFrame(rows, columns=["timestamp", "open", "high", "low", "close", "volume"])
+    df["close"] = df["close"].astype(float)
+
+    # 排除当前未收盘的 K 线，确保使用的是已定型的均线
+    if len(df) > 1:
+        df = df.iloc[:-1].copy()
+
+    # 计算简单移动平均线 (SMA)
+    t1 = float(df["close"].rolling(window=n1).mean().iloc[-1])
+    t2 = float(df["close"].rolling(window=n2).mean().iloc[-1])
+    t3 = float(df["close"].rolling(window=n3).mean().iloc[-1])
 
     return t1, t2, t3
 
@@ -282,7 +295,12 @@ async def cleanup_orphaned_state_and_orders(exchange):
         for symbol, market in exchange.markets.items():
             if market.get("linear") and symbol not in active_symbols:
                 try:
-                    await _cancel_script_stop_orders(exchange, symbol)
+                    orders = await _get_open_algo_orders(exchange, symbol)
+                    for order in orders:
+                        if str(order.get("clientAlgoId") or "").startswith(CLIENT_ALGO_PREFIX):
+                            algo_id = order.get("algoId") or order.get("id")
+                            if algo_id:
+                                await _cancel_algo(exchange, symbol, algo_id)
                 except Exception:
                     pass
     except Exception as e:
@@ -294,6 +312,7 @@ async def watch_symbol_position(exchange, symbol):
         try:
             full_config = _load_config()
             conf = full_config.get("position_protection", {})
+            stop_mode = str(conf.get("stop_mode", "moving_averages")).lower()
             timeframe = str(conf.get("timeframe", "1h"))
             n1 = int(conf.get("n1_bars", 7))
             n2 = int(conf.get("n2_bars", 26))
@@ -315,7 +334,9 @@ async def watch_symbol_position(exchange, symbol):
 
             if not pos:
                 logger.info(f"🧹 [{symbol}] 检测到无持仓，撤销交易所孤儿单并注销风控。")
-                await _cancel_script_stop_orders(exchange, symbol)
+                stops = await _find_stop_orders(exchange, symbol, "long", {}) + await _find_stop_orders(exchange, symbol, "short", {})
+                if stops:
+                    await _cancel_stop_orders(exchange, symbol, stops)
                 if state_key in state:
                     state.pop(state_key, None)
                     _save_state(state)
@@ -328,15 +349,19 @@ async def watch_symbol_position(exchange, symbol):
             pos_state = state.get(state_key, {})
             last_contracts = pos_state.get("contracts", contracts)
 
-            t1_val, t2_val, t3_val = await _calculate_swing_levels_async(exchange, symbol, side, timeframe, n1, n2, n3)
+            # 根据模式计算对应的防守线
+            if stop_mode in ("swing_levels", "swing"):
+                t1_val, t2_val, t3_val = await _calculate_swing_levels_async(exchange, symbol, side, timeframe, n1, n2, n3)
+            else:
+                t1_val, t2_val, t3_val = await _calculate_ma_levels_async(exchange, symbol, timeframe, n1, n2, n3)
 
+            # 兜底单防范插针，预留缓冲百分比
             if side == "long":
                 exchange_target_stop = float(exchange.price_to_precision(symbol, t3_val * (1 - buffer_pct)))
             else:
                 exchange_target_stop = float(exchange.price_to_precision(symbol, t3_val * (1 + buffer_pct)))
 
-            # 获取当前挂在交易所的本脚本止损单
-            stops = await _get_script_stop_orders(exchange, symbol)
+            stops = await _find_stop_orders(exchange, symbol, side, pos)
 
             current_trigger = None
             if stops:
@@ -353,22 +378,20 @@ async def watch_symbol_position(exchange, symbol):
                 elif side == "short" and exchange_target_stop < current_trigger * (1 - trailing_threshold):
                     needs_trailing = True
 
-            # 触发挂/更新止损单的条件：无单、加仓、或触发移动止盈
             if not stops or is_added or needs_trailing:
-                if needs_trailing and not is_added and stops:
-                    logger.success(f"🚀 [{symbol}] 触发移动止盈！(旧兜底价: {current_trigger} -> 新兜底价: {exchange_target_stop})，自动上移锁润单！")
+                if needs_trailing and not is_added:
+                    logger.success(f"🚀 [{symbol}] 均线位置推升！触发移动止盈 (旧兜底价: {current_trigger} -> 新兜底价: {exchange_target_stop})，已自动上移锁润单。")
 
                 if is_added:
                     logger.info(f"📈 [{symbol}] 检测到加仓 (旧仓: {last_contracts} -> 新仓: {contracts})")
                     if auto_reset_on_add:
-                        logger.info(f"🔄 [{symbol}] 重置 2/3/5 分层风控状态，按新总仓位保护。")
+                        logger.info(f"🔄 [{symbol}] 重置均线 2/3/5 分层风控状态，按新总仓位保护。")
                         pos_state["t1_done"] = False
                         pos_state["t2_done"] = False
 
-                # 无论出于什么原因挂新单，首先彻底撤销交易所上的旧兜底单
-                await _cancel_script_stop_orders(exchange, symbol)
+                if stops:
+                    await _cancel_stop_orders(exchange, symbol, stops)
 
-                # 挂设新的全仓全平兜底单
                 await _create_full_close_stop(exchange, symbol, pos, side, exchange_target_stop)
 
                 pos_state["contracts"] = contracts
@@ -383,6 +406,7 @@ async def watch_symbol_position(exchange, symbol):
             if not ohlcvs or not ohlcvs[-1]:
                 continue
 
+            # 使用当前最新收盘价判断是否“有效跌破/突破”均线
             latest_candle = ohlcvs[-1]
             close_price = _f(latest_candle[4])
 
@@ -391,20 +415,21 @@ async def watch_symbol_position(exchange, symbol):
 
             if side == "long":
                 if close_price <= t3_val:
-                    msg = f"🚨 [{symbol}] 做多 T3 破位！收盘价: {close_price} <= {t3_val}，执行剩余 50% 全仓清算！"
+                    msg = f"🚨 [{symbol}] 做多 有效跌破 {n3} 均线！收盘价: {close_price} <= {t3_val:.4f}，执行剩余全仓清算！"
                     logger.warning(msg)
-                    send_alert(full_config, "风控警告: T3 全平清算", msg, symbol=symbol)
+                    send_alert(full_config, "风控警告: T3 均线破位", msg, symbol=symbol)
                     try:
                         await exchange.create_market_order(symbol, 'sell', contracts, params={"reduceOnly": True, "positionSide": raw_ps} if raw_ps != "BOTH" else {"reduceOnly": True})
                     except Exception as e:
                         logger.error(f"清算失败: {e}")
-                    await _cancel_script_stop_orders(exchange, symbol)
+                    if stops:
+                        await _cancel_stop_orders(exchange, symbol, stops)
                     break
                 elif close_price <= t2_val and not t2_done:
                     reduce_qty = contracts * tier2_ratio
-                    msg = f"⚠️ [{symbol}] 做多 T2 破位！收盘价: {close_price} <= {t2_val}，执行 30% 减仓（数量: {reduce_qty}）"
+                    msg = f"⚠️ [{symbol}] 做多 有效跌破 {n2} 均线！收盘价: {close_price} <= {t2_val:.4f}，执行减仓（数量: {reduce_qty}）"
                     logger.warning(msg)
-                    send_alert(full_config, "风控提示: T2 阶段减仓", msg, symbol=symbol)
+                    send_alert(full_config, "风控提示: T2 均线破位", msg, symbol=symbol)
                     try:
                         await exchange.create_market_order(symbol, 'sell', exchange.amount_to_precision(symbol, reduce_qty), params={"reduceOnly": True, "positionSide": raw_ps} if raw_ps != "BOTH" else {"reduceOnly": True})
                     except Exception as e:
@@ -414,9 +439,9 @@ async def watch_symbol_position(exchange, symbol):
                     _save_state(state)
                 elif close_price <= t1_val and not t1_done:
                     reduce_qty = contracts * tier1_ratio
-                    msg = f"💡 [{symbol}] 做多 T1 破位！收盘价: {close_price} <= {t1_val}，执行 20% 减仓（数量: {reduce_qty}）"
+                    msg = f"💡 [{symbol}] 做多 有效跌破 {n1} 均线！收盘价: {close_price} <= {t1_val:.4f}，执行减仓（数量: {reduce_qty}）"
                     logger.warning(msg)
-                    send_alert(full_config, "风控提示: T1 阶段减仓", msg, symbol=symbol)
+                    send_alert(full_config, "风控提示: T1 均线破位", msg, symbol=symbol)
                     try:
                         await exchange.create_market_order(symbol, 'sell', exchange.amount_to_precision(symbol, reduce_qty), params={"reduceOnly": True, "positionSide": raw_ps} if raw_ps != "BOTH" else {"reduceOnly": True})
                     except Exception as e:
@@ -427,20 +452,21 @@ async def watch_symbol_position(exchange, symbol):
 
             elif side == "short":
                 if close_price >= t3_val:
-                    msg = f"🚨 [{symbol}] 做空 T3 破位！收盘价: {close_price} >= {t3_val}，执行剩余 50% 全仓清算！"
+                    msg = f"🚨 [{symbol}] 做空 有效突破 {n3} 均线！收盘价: {close_price} >= {t3_val:.4f}，执行剩余全仓清算！"
                     logger.warning(msg)
-                    send_alert(full_config, "风控警告: T3 全平清算", msg, symbol=symbol)
+                    send_alert(full_config, "风控警告: T3 均线破位", msg, symbol=symbol)
                     try:
                         await exchange.create_market_order(symbol, 'buy', contracts, params={"reduceOnly": True, "positionSide": raw_ps} if raw_ps != "BOTH" else {"reduceOnly": True})
                     except Exception as e:
                         logger.error(f"清算失败: {e}")
-                    await _cancel_script_stop_orders(exchange, symbol)
+                    if stops:
+                        await _cancel_stop_orders(exchange, symbol, stops)
                     break
                 elif close_price >= t2_val and not t2_done:
                     reduce_qty = contracts * tier2_ratio
-                    msg = f"⚠️ [{symbol}] 做空 T2 破位！收盘价: {close_price} >= {t2_val}，执行 30% 减仓（数量: {reduce_qty}）"
+                    msg = f"⚠️ [{symbol}] 做空 有效突破 {n2} 均线！收盘价: {close_price} >= {t2_val:.4f}，执行减仓（数量: {reduce_qty}）"
                     logger.warning(msg)
-                    send_alert(full_config, "风控提示: T2 阶段减仓", msg, symbol=symbol)
+                    send_alert(full_config, "风控提示: T2 均线破位", msg, symbol=symbol)
                     try:
                         await exchange.create_market_order(symbol, 'buy', exchange.amount_to_precision(symbol, reduce_qty), params={"reduceOnly": True, "positionSide": raw_ps} if raw_ps != "BOTH" else {"reduceOnly": True})
                     except Exception as e:
@@ -450,9 +476,9 @@ async def watch_symbol_position(exchange, symbol):
                     _save_state(state)
                 elif close_price >= t1_val and not t1_done:
                     reduce_qty = contracts * tier1_ratio
-                    msg = f"💡 [{symbol}] 做空 T1 破位！收盘价: {close_price} >= {t1_val}，执行 20% 减仓（数量: {reduce_qty}）"
+                    msg = f"💡 [{symbol}] 做空 有效突破 {n1} 均线！收盘价: {close_price} >= {t1_val:.4f}，执行减仓（数量: {reduce_qty}）"
                     logger.warning(msg)
-                    send_alert(full_config, "风控提示: T1 阶段减仓", msg, symbol=symbol)
+                    send_alert(full_config, "风控提示: T1 均线破位", msg, symbol=symbol)
                     try:
                         await exchange.create_market_order(symbol, 'buy', exchange.amount_to_precision(symbol, reduce_qty), params={"reduceOnly": True, "positionSide": raw_ps} if raw_ps != "BOTH" else {"reduceOnly": True})
                     except Exception as e:
@@ -482,7 +508,7 @@ async def protect_positions_main(exchange, config=None):
         return
 
     _algo_methods(exchange)
-    logger.info("🛡️ 启动多层极值风控主控循环 (已彻底修复加仓/移动止盈旧单撤销机制)...")
+    logger.info("🛡️ 启动多层极值风控主控循环 (支持均线止损 & 移动追踪)...")
     await cleanup_orphaned_state_and_orders(exchange)
     last_cleanup_time = time.time()
 
