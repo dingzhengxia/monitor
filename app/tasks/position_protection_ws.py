@@ -1,7 +1,7 @@
 """Binance USDⓈ-M Futures Multi-Tier & Trailing Position Protection.
 
 Features:
-1. Normal Market: 1h Close Price Breakdown Confirmation (Prevents Wick/Pin Whipsaws).
+1. Normal Market: 1h Close Price Breakdown Confirmation with Buffer Zone (Prevents Whipsaws).
 2. Emergency Flash Crash: 15m Dynamic ATR Volatility Spike Circuit Breaker (Instant Market Close).
 3. Manual Add Position: Breakout Immunity Mechanism (Prevents Immediate Stop-loss Trigger on Dip Buying).
 4. Exchange Level Hard Stop: Full Close Conditional Order with Trailing Updates.
@@ -36,6 +36,7 @@ DEFAULT_CONFIG = {
         "tier1_ratio": 0.2,
         "tier2_ratio": 0.3,
         "exchange_buffer_pct": 0.01,
+        "ma_break_buffer_pct": 0.003,
         "auto_reset_state_on_add": True,
         "sync_exchange_stop_on_reduce": True,
         "trailing_update_threshold_pct": 0.005,
@@ -367,6 +368,7 @@ async def watch_symbol_position(exchange, symbol):
             tier1_ratio = float(conf.get("tier1_ratio", 0.2))
             tier2_ratio = float(conf.get("tier2_ratio", 0.3))
             buffer_pct = float(conf.get("exchange_buffer_pct", 0.01))
+            ma_buffer = float(conf.get("ma_break_buffer_pct", 0.003))
             auto_reset_on_add = bool(conf.get("auto_reset_state_on_add", True))
             trailing_threshold = float(conf.get("trailing_update_threshold_pct", 0.005))
 
@@ -418,7 +420,6 @@ async def watch_symbol_position(exchange, symbol):
 
             is_added = contracts > (last_contracts + 1e-8)
 
-            # 手动加仓破位豁免机制
             if is_added:
                 logger.info(f"📈 [{symbol}] 检测到加仓 (旧仓: {last_contracts} -> 新仓: {contracts})")
                 try:
@@ -483,7 +484,7 @@ async def watch_symbol_position(exchange, symbol):
                 msg = (
                     f"💥 [{symbol}] 盘中触发【{emergency_tf} 波动率异常{action_str}熔断】！\n"
                     f"当前波幅: {actual_change:.4f} USDT >= 阈值 ({emergency_atr_mult}x ATR = {required_threshold:.4f} USDT)\n"
-                    f"检测到黑天鹅砸盘，放弃等待 1h 收盘，立即紧急全仓清算！"
+                    f"检测到黑天鹅行情，放弃等待 1h 收盘，立即紧急全仓清算！"
                 )
                 logger.warning(msg)
                 send_alert(full_config, f"紧急风控: {emergency_tf} 波动率熔断", msg, symbol=symbol)
@@ -503,7 +504,7 @@ async def watch_symbol_position(exchange, symbol):
                 break
 
             # -------------------------------------------------------------
-            # 防御机制 B：常规【真·1小时收盘确认】（防常规插针洗盘）
+            # 防御机制 B：常规【真·1小时收盘确认】（引入缓冲容错带）
             # -------------------------------------------------------------
             closed_candle = ohlcvs[-2]
             closed_time = closed_candle[0]
@@ -520,8 +521,12 @@ async def watch_symbol_position(exchange, symbol):
                     if closed_price > t2_val: pos_state["immune_t2"] = False
                     if closed_price > t1_val: pos_state["immune_t1"] = False
 
-                    if closed_price <= t3_val and not pos_state.get("immune_t3", False):
-                        msg = f"🚨 [{symbol}] 做多 有效跌破 {n3} 均线（K线已定型收盘）！收盘价: {closed_price} <= {t3_val:.4f}，执行剩余全仓清算！"
+                    t3_threshold = t3_val * (1 - ma_buffer)
+                    t2_threshold = t2_val * (1 - ma_buffer)
+                    t1_threshold = t1_val * (1 - ma_buffer)
+
+                    if closed_price <= t3_threshold and not pos_state.get("immune_t3", False):
+                        msg = f"🚨 [{symbol}] 做多 有效跌破 {n3} 均线防守带！收盘价: {closed_price} <= 缓冲线下沿 {t3_threshold:.4f}，执行剩余全仓清算！"
                         logger.warning(msg)
                         send_alert(full_config, "风控警告: T3 均线收盘破位", msg, symbol=symbol)
                         try:
@@ -534,9 +539,9 @@ async def watch_symbol_position(exchange, symbol):
                         _save_state(state)
                         break
 
-                    elif closed_price <= t2_val and not t2_done and not pos_state.get("immune_t2", False):
+                    elif closed_price <= t2_threshold and not t2_done and not pos_state.get("immune_t2", False):
                         reduce_qty = contracts * tier2_ratio
-                        msg = f"⚠️ [{symbol}] 做多 有效跌破 {n2} 均线（K线已定型收盘）！收盘价: {closed_price} <= {t2_val:.4f}，执行减仓 ({reduce_qty})"
+                        msg = f"⚠️ [{symbol}] 做多 有效跌破 {n2} 均线防守带！收盘价: {closed_price} <= 缓冲线下沿 {t2_threshold:.4f}，执行减仓 ({reduce_qty})"
                         logger.warning(msg)
                         send_alert(full_config, "风控提示: T2 均线收盘破位", msg, symbol=symbol)
                         try:
@@ -545,9 +550,9 @@ async def watch_symbol_position(exchange, symbol):
                             logger.error(f"减仓失败: {e}")
                         pos_state["t2_done"] = True
 
-                    elif closed_price <= t1_val and not t1_done and not pos_state.get("immune_t1", False):
+                    elif closed_price <= t1_threshold and not t1_done and not pos_state.get("immune_t1", False):
                         reduce_qty = contracts * tier1_ratio
-                        msg = f"💡 [{symbol}] 做多 有效跌破 {n1} 均线（K线已定型收盘）！收盘价: {closed_price} <= {t1_val:.4f}，执行减仓 ({reduce_qty})"
+                        msg = f"💡 [{symbol}] 做多 有效跌破 {n1} 均线防守带！收盘价: {closed_price} <= 缓冲线下沿 {t1_threshold:.4f}，执行减仓 ({reduce_qty})"
                         logger.warning(msg)
                         send_alert(full_config, "风控提示: T1 均线收盘破位", msg, symbol=symbol)
                         try:
@@ -561,8 +566,12 @@ async def watch_symbol_position(exchange, symbol):
                     if closed_price < t2_val: pos_state["immune_t2"] = False
                     if closed_price < t1_val: pos_state["immune_t1"] = False
 
-                    if closed_price >= t3_val and not pos_state.get("immune_t3", False):
-                        msg = f"🚨 [{symbol}] 做空 有效突破 {n3} 均线（K线已定型收盘）！收盘价: {closed_price} >= {t3_val:.4f}，执行剩余全仓清算！"
+                    t3_threshold = t3_val * (1 + ma_buffer)
+                    t2_threshold = t2_val * (1 + ma_buffer)
+                    t1_threshold = t1_val * (1 + ma_buffer)
+
+                    if closed_price >= t3_threshold and not pos_state.get("immune_t3", False):
+                        msg = f"🚨 [{symbol}] 做空 有效突破 {n3} 均线防守带！收盘价: {closed_price} >= 缓冲线上沿 {t3_threshold:.4f}，执行剩余全仓清算！"
                         logger.warning(msg)
                         send_alert(full_config, "风控警告: T3 均线收盘破位", msg, symbol=symbol)
                         try:
@@ -575,9 +584,9 @@ async def watch_symbol_position(exchange, symbol):
                         _save_state(state)
                         break
 
-                    elif closed_price >= t2_val and not t2_done and not pos_state.get("immune_t2", False):
+                    elif closed_price >= t2_threshold and not t2_done and not pos_state.get("immune_t2", False):
                         reduce_qty = contracts * tier2_ratio
-                        msg = f"⚠️ [{symbol}] 做空 有效突破 {n2} 均线（K线已定型收盘）！收盘价: {closed_price} >= {t2_val:.4f}，执行减仓 ({reduce_qty})"
+                        msg = f"⚠️ [{symbol}] 做空 有效突破 {n2} 均线防守带！收盘价: {closed_price} >= 缓冲线上沿 {t2_threshold:.4f}，执行减仓 ({reduce_qty})"
                         logger.warning(msg)
                         send_alert(full_config, "风控提示: T2 均线收盘破位", msg, symbol=symbol)
                         try:
@@ -586,9 +595,9 @@ async def watch_symbol_position(exchange, symbol):
                             logger.error(f"减仓失败: {e}")
                         pos_state["t2_done"] = True
 
-                    elif closed_price >= t1_val and not t1_done and not pos_state.get("immune_t1", False):
+                    elif closed_price >= t1_threshold and not t1_done and not pos_state.get("immune_t1", False):
                         reduce_qty = contracts * tier1_ratio
-                        msg = f"💡 [{symbol}] 做空 有效突破 {n1} 均线（K线已定型收盘）！收盘价: {closed_price} >= {t1_val:.4f}，执行减仓 ({reduce_qty})"
+                        msg = f"💡 [{symbol}] 做空 有效突破 {n1} 均线防守带！收盘价: {closed_price} >= 缓冲线上沿 {t1_threshold:.4f}，执行减仓 ({reduce_qty})"
                         logger.warning(msg)
                         send_alert(full_config, "风控提示: T1 均线收盘破位", msg, symbol=symbol)
                         try:
@@ -617,7 +626,7 @@ async def protect_positions_main(exchange, config=None):
         return
 
     _algo_methods(exchange)
-    logger.info("🛡️ 启动多层动态均线风控主控循环 (真·收盘确认 + 15m ATR 急跌熔断 + 加仓豁免)...")
+    logger.info("🛡️ 启动多层动态均线风控主控循环 (真·收盘确认带缓冲 + 15m ATR 急跌熔断 + 加仓豁免)...")
     await cleanup_orphaned_state_and_orders(exchange)
     last_cleanup_time = time.time()
 

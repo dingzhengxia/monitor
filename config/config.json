@@ -304,6 +304,7 @@
     "tier1_ratio": 0.2,
     "tier2_ratio": 0.3,
     "exchange_buffer_pct": 0.01,
+    "ma_break_buffer_pct": 0.003,
     "auto_reset_state_on_add": true,
     "sync_exchange_stop_on_reduce": true,
     "trailing_update_threshold_pct": 0.005,
