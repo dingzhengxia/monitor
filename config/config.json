@@ -297,24 +297,110 @@
   "position_protection": {
     "enabled": true,
     "stop_mode": "moving_averages",
-    "timeframe": "1h",
-    "n1_bars": 7,
-    "n2_bars": 26,
-    "n3_bars": 83,
-    "tier1_ratio": 0.2,
-    "tier2_ratio": 0.3,
-    "exchange_buffer_pct": 0.01,
-    "ma_break_buffer_pct": 0.003,
-    "auto_reset_state_on_add": true,
-    "sync_exchange_stop_on_reduce": true,
-    "trailing_update_threshold_pct": 0.005,
-    "emergency_timeframe": "15m",
-    "emergency_atr_period": 14,
-    "emergency_atr_multiplier": 3.0,
-    "take_profit": {
-      "enabled": false,
-      "mode": "rr_ratio",
-      "risk_reward_ratio": 2.0
+    "ma": {
+      "timeframe": "1h",
+      "n1_bars": 7,
+      "n2_bars": 26,
+      "n3_bars": 83,
+      "atr_period": 14,
+      "atr_buffer_multiplier": 0.30,
+      "recovery_atr_buffer_multiplier": 0.30,
+      "require_closed_candle": true,
+      "require_second_confirmation_for_exit": true
+    },
+    "tiers": {
+      "tier1_ratio": 0.20,
+      "tier2_ratio": 0.30,
+      "use_risk_cycle_base_position": true,
+      "confirm_position_after_execution": true
+    },
+    "position_state": {
+      "detect_manual_position_changes": true,
+      "reset_risk_cycle_on_add": true,
+      "add_immunity_until_current_candle_close": true,
+      "use_position_version": true,
+      "cleanup_state_on_manual_close": true,
+      "sync_state_on_startup": true
+    },
+    "execution": {
+      "symbol_side_lock": true,
+      "require_position_snapshot": true,
+      "require_position_version_check": true,
+      "confirm_order_execution": true,
+      "confirm_position_change": true,
+      "retry_on_partial_fill": false
+    },
+    "emergency": {
+      "enabled": true,
+      "timeframe": "15m",
+      "atr_period": 14,
+      "atr_multiplier": 3.0,
+      "structure_lookback": 4,
+      "require_second_confirmation": true,
+      "confirmation_delay_sec": 1.0,
+      "require_double_price_source": true,
+      "max_price_source_difference_pct": 0.003,
+      "require_fresh_data": true
+    },
+    "hard_stop": {
+      "enabled": true,
+      "timeframe": "1h",
+      "atr_period": 14,
+      "atr_multiplier": 6.0,
+      "minimum_distance_pct": 0.05,
+      "recreate_if_missing": true,
+      "only_manage_program_orders": true,
+      "cleanup_when_position_closed": true,
+      "sync_on_position_change": true
+    },
+    "api_protection": {
+      "enabled": true,
+      "max_retries": 5,
+      "retry_initial_delay_sec": 1.0,
+      "retry_max_delay_sec": 30.0,
+      "retry_jitter_pct": 0.20,
+      "failure_threshold": 5,
+      "circuit_breaker_cooldown_sec": 30,
+      "enable_request_priority": true,
+      "positions_cache_ttl_sec": 5,
+      "ticker_cache_ttl_sec": 2,
+      "orders_cache_ttl_sec": 5,
+      "ohlcv_cache_enabled": true
+    },
+    "websocket": {
+      "enabled": true,
+      "single_subscription_per_symbol": true,
+      "stale_timeout_sec": 30,
+      "reconnect_enabled": true,
+      "reconnect_initial_sec": 1,
+      "reconnect_max_sec": 60,
+      "reconnect_jitter_pct": 0.20,
+      "fallback_to_rest_when_stale": true,
+      "resync_after_reconnect": true
+    },
+    "safe_mode": {
+      "enabled": true,
+      "on_api_failure": true,
+      "on_ws_and_rest_failure": true,
+      "block_trading_on_stale_data": true
+    },
+    "state": {
+      "persistence_enabled": true,
+      "file": "position_protection_state.json",
+      "sync_on_startup": true
+    },
+    "data_validation": {
+      "require_sufficient_ohlcv": true,
+      "minimum_ohlcv_candles": 100,
+      "reject_stale_market_data": true,
+      "reject_single_source_price_anomaly": true
+    },
+    "logging": {
+      "log_position_changes": true,
+      "log_execution": true,
+      "log_api_rate_limit": true,
+      "log_ws_reconnect": true,
+      "log_safe_mode": true
     }
   }
 }
