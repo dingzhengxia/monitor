@@ -113,11 +113,10 @@ def _load_config():
     return DEFAULT_CONFIG
 
 
+# ----------------- 辅助工具 -----------------
 def _f(value, default=None):
-    try:
-        return default if value is None else float(value)
-    except (TypeError, ValueError):
-        return default
+    try: return default if value is None else float(value)
+    except: return default
 
 
 def _load_state():
@@ -133,24 +132,21 @@ def _load_state():
 
 
 def _save_state(state):
-    tmp = STATE_FILE.with_suffix(".tmp")
+    tmp = STATE_FILE.with_suffix(f".{os.getpid()}.tmp") # 使用 PID 区分
     try:
         with tmp.open("w", encoding="utf-8") as f:
             json.dump(state, f, ensure_ascii=False, indent=2)
             f.flush()
             os.fsync(f.fileno())
-        os.replace(tmp, STATE_FILE)
+        # 在 Windows 上 replace 容易失败，改用 rename
+        if os.path.exists(STATE_FILE):
+            os.remove(STATE_FILE)
+        os.rename(tmp, STATE_FILE)
     except Exception as exc:
         logger.error(f"保存状态失败: {exc}")
-        try:
-            tmp.unlink(missing_ok=True)
-        except Exception:
-            pass
 
 
-def _state_key(symbol, side):
-    return f"{symbol}_{side}"
-
+def _state_key(symbol, side): return f"{symbol}_{side}"
 
 def _position_side(position):
     if not position:
@@ -610,16 +606,28 @@ async def _full_exit_with_revalidation(exchange, symbol, side, position, reason,
 async def _ensure_disaster_stop(exchange, symbol, side, pos, current_price, conf, force_replace=False):
     if not bool(conf.get("exchange_hard_stop_enabled", True)):
         return
-    atr = await _closed_atr(exchange, symbol, str(conf.get("hard_stop_timeframe", "1h")),
-                            int(conf.get("hard_stop_atr_period", 14)), conf)
-    stop, distance = _calculate_disaster_stop(exchange, symbol, side, current_price, atr, conf)
-    stops = await _find_stop_orders(exchange, symbol, side, pos, current_price, conf, force=True)
-    if stops and not force_replace:
-        return
-    if stops:
-        await _cancel_stop_orders(exchange, symbol, stops, conf)
-    await _create_full_close_stop(exchange, symbol, pos, side, stop, conf)
-    logger.info(f"[{symbol}] 灾难 STOP 距离 {distance:.2%}")
+
+    try:
+        atr = await _closed_atr(exchange, symbol, str(conf.get("hard_stop_timeframe", "1h")), 14, conf)
+        stop_price, distance = _calculate_disaster_stop(exchange, symbol, side, current_price, atr, conf)
+        stops = await _find_stop_orders(exchange, symbol, side, pos, current_price, conf, force=True)
+
+        # 检查是否需要更新（偏差 > 0.5%）
+        needs_update = False
+        if stops:
+            existing_trigger = _algo_trigger(stops[0])
+            if existing_trigger and abs(existing_trigger - stop_price) / stop_price > 0.005:
+                needs_update = True
+
+        if stops and not force_replace and not needs_update:
+            return
+
+        if stops:
+            await _cancel_stop_orders(exchange, symbol, stops, conf)
+        await _create_full_close_stop(exchange, symbol, pos, side, stop_price, conf)
+        logger.info(f"[{symbol}] 灾难 STOP 已维护，触发价: {stop_price}")
+    except Exception as e:
+        logger.error(f"[{symbol}] 维护灾难止损出错: {e}")
 
 
 def _reconcile_position_state(state, key, symbol, side, contracts, timeframe):
