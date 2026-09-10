@@ -119,21 +119,14 @@ def _load_state():
 
 # 【修复点1】: 解决文件锁定导致的 [Errno 16] Device or resource busy
 def _save_state(state):
-    tmp = STATE_FILE.with_suffix(f".{os.getpid()}.tmp")
     try:
-        with tmp.open("w", encoding="utf-8") as f:
+        # 放弃使用 rename，直接原文件覆盖写入，解决 Docker 挂载卷的 Errno 16 报错
+        with STATE_FILE.open("w", encoding="utf-8") as f:
             json.dump(state, f, ensure_ascii=False, indent=2)
             f.flush()
             os.fsync(f.fileno())
-        if sys.platform == "win32" and os.path.exists(STATE_FILE):
-            os.remove(STATE_FILE)
-        os.rename(tmp, STATE_FILE)
     except Exception as exc:
         logger.error(f"保存状态失败: {exc}")
-        try:
-            tmp.unlink(missing_ok=True)
-        except Exception:
-            pass
 
 
 def _state_key(symbol, side):
@@ -354,23 +347,26 @@ def _algo_trigger(order):
 def _is_program_stop(order, side, position_side, current_price=None):
     if not isinstance(order, dict):
         return False
-    if not str(order.get("clientAlgoId") or "").startswith(CLIENT_ALGO_PREFIX):
+    # 核心判断：只要客户端订单号是我们生成的前缀，就认！
+    client_id = str(order.get("clientAlgoId") or order.get("clientOrderId") or "")
+    if not client_id.startswith(CLIENT_ALGO_PREFIX):
         return False
-    if str(order.get("orderType") or order.get("type") or "").upper() != "STOP_MARKET":
+
+    type_upper = str(order.get("orderType") or order.get("type") or "").upper()
+    if type_upper != "STOP_MARKET":
         return False
+
     status = _algo_status(order)
-    if status and status not in ("NEW", "TRIGGER_PENDING", "UNTRIGGERED", ""):
+    if status and status not in ("NEW", "TRIGGER_PENDING", "UNTRIGGERED", "PARTIALLY_FILLED", ""):
         return False
+
     expected = "SELL" if side == "long" else "BUY"
     if str(order.get("side") or "").upper() != expected:
         return False
-    ps = str(order.get("positionSide") or "BOTH").upper()
-    if position_side in ("LONG", "SHORT") and ps != position_side:
-        return False
-    trigger = _algo_trigger(order)
-    if trigger is None or current_price is None:
-        return True
-    return trigger < current_price if side == "long" else trigger > current_price
+
+    # 我们不再校验 trigger_price 和 current_price 的方向关系
+    # 因为在极端插针时可能导致误判而疯狂取消重挂
+    return True
 
 
 async def _get_open_algo_orders(exchange, symbol, conf, force=False):
@@ -595,28 +591,46 @@ async def _full_exit_with_revalidation(exchange, symbol, side, position, reason,
 # ---------------------------------------------------------------------------
 
 # 【修复点3】: 修复止损单价格漂移不更新的 BUG
+# 增加一个全局字典，记录上一次挂单时间，防止并发死循环
+LAST_STOP_ORDER_TIME = {}
+
+
 async def _ensure_disaster_stop(exchange, symbol, side, pos, current_price, conf, force_replace=False):
     if not bool(conf.get("exchange_hard_stop_enabled", True)):
         return
-    atr = await _closed_atr(exchange, symbol, str(conf.get("hard_stop_timeframe", "1h")),
-                            int(conf.get("hard_stop_atr_period", 14)), conf)
-    stop, distance = _calculate_disaster_stop(exchange, symbol, side, current_price, atr, conf)
-    stops = await _find_stop_orders(exchange, symbol, side, pos, current_price, conf, force=True)
 
-    # 检查是否需要更新（目标止损价与现存止损价偏差超过 0.5%）
-    needs_update = False
-    if stops:
-        existing_trigger = _algo_trigger(stops[0])
-        if existing_trigger and abs(existing_trigger - stop) / stop > 0.005:
-            logger.info(f"[{symbol}] ⚠️ 止损单价格偏差过大 (现价:{existing_trigger} 目标:{stop})，准备重置。")
-            needs_update = True
-
-    if stops and not force_replace and not needs_update:
+    # 防抖：距离上次该 symbol 挂单如果不足 10 秒，直接跳过，防止死循环刷单
+    global LAST_STOP_ORDER_TIME
+    last_time = LAST_STOP_ORDER_TIME.get(symbol, 0)
+    if time.time() - last_time < 10.0:
         return
 
-    if stops:
-        await _cancel_stop_orders(exchange, symbol, stops, conf)
-    await _create_full_close_stop(exchange, symbol, pos, side, stop, conf)
+    try:
+        atr = await _closed_atr(exchange, symbol, str(conf.get("hard_stop_timeframe", "1h")),
+                                int(conf.get("hard_stop_atr_period", 14)), conf)
+        stop, distance = _calculate_disaster_stop(exchange, symbol, side, current_price, atr, conf)
+
+        stops = await _find_stop_orders(exchange, symbol, side, pos, current_price, conf, force=True)
+
+        needs_update = False
+        if stops:
+            existing_trigger = _algo_trigger(stops[0])
+            # 如果偏差大于 1.5% 才重挂，0.5% 容易因为现价微调而疯狂触发
+            if existing_trigger and abs(existing_trigger - stop) / stop > 0.015:
+                logger.info(f"[{symbol}] ⚠️ 止损单价格偏差 > 1.5% (现单:{existing_trigger} 新目标:{stop})，准备重置。")
+                needs_update = True
+
+        if stops and not force_replace and not needs_update:
+            return
+
+        if stops:
+            await _cancel_stop_orders(exchange, symbol, stops, conf)
+
+        await _create_full_close_stop(exchange, symbol, pos, side, stop, conf)
+        LAST_STOP_ORDER_TIME[symbol] = time.time()  # 记录挂单时间
+
+    except Exception as exc:
+        logger.error(f"[{symbol}] 维护灾难止损异常: {exc}")
 
 
 def _reconcile_position_state(state, key, symbol, side, contracts, timeframe):
