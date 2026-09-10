@@ -723,36 +723,33 @@ async def _next_ws_ohlcv(exchange, symbol, timeframe, conf):
 
 
 async def watch_symbol_position(exchange, symbol):
-    ws_delay = 0.0
     last_heartbeat_time = 0
-
-    # 【新增可视化日志】
-    logger.info(f"[{symbol}] 👁️ 已成功启动高级风控守护协程 (MA + Emergency + StopLoss)")
+    logger.info(f"[{symbol}] 👁️ 已成功启动高级风控守护协程 (MA趋势 + 抄底兼容 + 黑天鹅应急 + StopLoss)")
 
     while True:
-        full_config = _load_config()
-        conf = full_config.get("position_protection", {})
-        if not conf.get("enabled", True):
-            await asyncio.sleep(5)
-            continue
-        timeframe = str(conf.get("timeframe", "1h"))
         try:
-            if ws_delay:
-                await asyncio.sleep(ws_delay)
-            # Ensure we pass specific symbol to avoid fetching full account positions repeatedly
+            full_config = _load_config()
+            conf = full_config.get("position_protection", {})
+            if not conf.get("enabled", True):
+                await asyncio.sleep(5)
+                continue
+
+            timeframe = str(conf.get("timeframe", "1h"))
+
+            # 1. 抓取最新持仓，防阻塞设计
             positions = await _fetch_positions(exchange, conf, symbols=[symbol], priority="NORMAL", force=True)
             pos = next((p for p in positions if _position_size(p) > 0 and _position_side(p) in ("long", "short")), None)
 
             if not pos:
-                # Remove both possible state keys and only our own orphan STOPs.
                 state = _load_state()
                 for side0 in ("long", "short"):
                     state.pop(_state_key(symbol, side0), None)
                     dummy = {"info": {"positionSide": "LONG" if side0 == "long" else "SHORT"}}
                     try:
                         orders = await _find_stop_orders(exchange, symbol, side0, dummy, None, conf, force=True)
-                        await _cancel_stop_orders(exchange, symbol, orders, conf)
-                        logger.info(f"[{symbol}] 仓位已平，已清理关联的条件止损单。")
+                        if orders:
+                            await _cancel_stop_orders(exchange, symbol, orders, conf)
+                            logger.info(f"[{symbol}] 仓位已平，清理关联条件单。")
                     except Exception:
                         pass
                 _save_state(state)
@@ -761,167 +758,159 @@ async def watch_symbol_position(exchange, symbol):
 
             side = _position_side(pos)
             contracts = _position_size(pos)
+            entry_price = _f(pos.get("entryPrice"), 0.0)  # 获取开仓均价
             key = _state_key(symbol, side)
 
-            # 【新增可视化日志】：专属心跳
             now_time = time.time()
             if now_time - last_heartbeat_time > 60:
-                logger.info(f"[{symbol}] 🛡️ 守护巡检中... 当前{ '做多' if side=='long' else '做空' }仓位: {contracts}")
+                logger.info(
+                    f"[{symbol}] 🛡️ 巡检中... 当前{'做多' if side == 'long' else '做空'}仓位: {contracts} | 开仓均价: {entry_price}")
                 last_heartbeat_time = now_time
 
             state = _load_state()
             pos_state, changed = _reconcile_position_state(state, key, symbol, side, contracts, timeframe)
-            _save_state(state)
+            if changed: _save_state(state)
 
             async with RUNTIME.action_lock(symbol, side):
-                # Snapshot is shared by STOP maintenance and emergency validation.
                 snap = await _market_snapshot(exchange, symbol, conf, priority="NORMAL")
-                await _ensure_disaster_stop(exchange, symbol, side, pos, snap["mark"], conf, force_replace=changed)
+                current_price = snap["mark"]
+                # 维护交易所灾难止损
+                await _ensure_disaster_stop(exchange, symbol, side, pos, current_price, conf, force_replace=changed)
 
-            # WebSocket primary path.  If stale/failed, exponential reconnect with jitter.
+            # ---------------- Emergency 黑天鹅防范 ----------------
             try:
-                ohlcvs = await _next_ws_ohlcv(exchange, symbol, timeframe, conf)
-                ws_delay = 0.0
-            except Exception as ws_exc:
-                initial = float(conf.get("ws_reconnect_initial_sec", 1))
-                maximum = float(conf.get("ws_reconnect_max_sec", 60))
-                jitter = float(conf.get("ws_reconnect_jitter_pct", 0.20))
-                ws_delay = min(maximum, max(initial, ws_delay * 2 if ws_delay else initial))
-                ws_delay *= random.uniform(max(0.0, 1 - jitter), 1 + jitter)
-                # REST fallback keeps closed-candle protection alive without busy looping.
-                ohlcvs = await _fetch_ohlcv(exchange, symbol, timeframe, max(int(conf.get("n3_bars", 83)) + 25, 120), conf, force=True)
-
-            # Re-check actual position after potentially long WS wait.
-            pos = await _position_fresh(exchange, symbol, side, conf, priority="NORMAL")
-            if not pos:
-                continue
-            contracts = _position_size(pos)
-            state = _load_state()
-            pos_state, changed2 = _reconcile_position_state(state, key, symbol, side, contracts, timeframe)
-            if changed2:
-                _save_state(state)
-                continue
-
-            # ---------------- Emergency: ATR + structure + two-source + second check ----------------
-            em_rows = None
-            try:
-                emergency, details = await _emergency_signal(exchange, symbol, side, conf)
-                # 【新增可视化日志】：如果发现行情异动，提前预警
+                emergency, details = await _emergency_signal(exchange, symbol, side, conf, force_rest=True)
                 if details and details["move"] >= details["threshold"] * 0.8:
-                    logger.warning(f"[{symbol}] 🚨 行情异动逼近 Emergency 阈值！当前波动: {details['move']:.2f} (熔断阈值: {details['threshold']:.2f})")
+                    logger.warning(
+                        f"[{symbol}] 🚨 行情异动逼近 Emergency 阈值！当前波动: {details['move']:.2f} (熔断阈值: {details['threshold']:.2f})")
 
                 if emergency:
                     ok, _ = await _two_source_price_ok(exchange, symbol, details["ws_price"], side, conf)
                     if ok:
-                        await asyncio.sleep(float(conf.get("emergency_recheck_delay_sec", 0.35)))
-                        emergency2, details2 = await _emergency_signal(exchange, symbol, side, conf, force_rest=True)
-                        ok2, _ = await _two_source_price_ok(exchange, symbol, details2["ws_price"], side, conf) if emergency2 else (False, None)
-                        if emergency2 and ok2:
-                            async with RUNTIME.action_lock(symbol, side):
-                                state = _load_state(); pos_state = state.get(key, pos_state)
-                                fresh = await _position_fresh(exchange, symbol, side, conf, priority="HIGH")
-                                if fresh:
-                                    msg = f"[{symbol}] Emergency 确认：异常波动 {details2['move']:.6f} >= 阈值 {details2['threshold']:.6f} 且结构破位，双源二次确认通过，全平。"
-                                    logger.error(msg); send_alert(full_config, "风控警告: Emergency 黑天鹅熔断", msg, symbol=symbol)
-                                    success, _ = await _full_exit_with_revalidation(exchange, symbol, side, fresh, "Emergency 全平", conf, pos_state)
-                                    if success:
-                                        current = details2["ws_price"]
-                                        stops = await _find_stop_orders(exchange, symbol, side, fresh, current, conf, force=True)
-                                        await _cancel_stop_orders(exchange, symbol, stops, conf)
-                                        state.pop(key, None); _save_state(state)
-                                        return
-            except Exception as exc:
+                        async with RUNTIME.action_lock(symbol, side):
+                            state = _load_state();
+                            pos_state = state.get(key, pos_state)
+                            fresh = await _position_fresh(exchange, symbol, side, conf, priority="HIGH")
+                            if fresh:
+                                msg = f"[{symbol}] Emergency 确认：异常波动 {details['move']:.6f} >= 阈值，双源确认通过，执行黑天鹅全平！"
+                                logger.error(msg);
+                                send_alert(full_config, "风控警告: Emergency 黑天鹅熔断", msg, symbol=symbol)
+                                success, _ = await _full_exit_with_revalidation(exchange, symbol, side, fresh,
+                                                                                "Emergency 全平", conf, pos_state)
+                                if success:
+                                    stops = await _find_stop_orders(exchange, symbol, side, fresh, current_price, conf,
+                                                                    force=True)
+                                    await _cancel_stop_orders(exchange, symbol, stops, conf)
+                                    state.pop(key, None);
+                                    _save_state(state)
+                                    return
+            except Exception:
                 pass
 
-            # ---------------- Normal MA: CLOSED candle only ----------------
+            # ---------------- Normal MA: CLOSED candle ----------------
             try:
                 n1, n2, n3 = int(conf.get("n1_bars", 7)), int(conf.get("n2_bars", 26)), int(conf.get("n3_bars", 83))
-                t1, t2, t3, closed_ts, closed_price, _ = await _ma_levels(exchange, symbol, timeframe, n1, n2, n3, conf)
+                t1, t2, t3, closed_ts, closed_price, _ = await _ma_levels(exchange, symbol, timeframe, n1, n2, n3, conf,
+                                                                          force=True)
                 last_ts = int(pos_state.get("last_checked_time", 0))
+
                 if closed_ts <= last_ts:
+                    await asyncio.sleep(5)  # 未收盘，休息 5 秒后继续循环
                     continue
 
-                # 【新增可视化日志】：K线收盘，打印当前的 MA 状态
-                logger.info(f"[{symbol}] 📈 触发 {timeframe} K线收盘验证！现价:{closed_price} | T1({n1}):{t1:.2f} | T2({n2}):{t2:.2f} | T3({n3}):{t3:.2f}")
+                logger.info(
+                    f"[{symbol}] 📈 {timeframe} K线收盘！现价:{closed_price} | T1:{t1:.2f} | T2:{t2:.2f} | T3(终极):{t3:.2f}")
 
                 atr = await _closed_atr(exchange, symbol, timeframe, int(conf.get("ma_atr_period", 14)), conf)
                 br = atr * float(conf.get("ma_atr_buffer_multiplier", 0.30))
-                rec = atr * float(conf.get("recovery_atr_buffer_multiplier", 0.30))
-                immunity = int(time.time() * 1000) < int(pos_state.get("add_immunity_until_ms", 0))
 
+                # ------ 核心修复：抄底逻辑兼容 ------
+                is_bottom_fishing = False
+                if entry_price > 0:
+                    if side == "long" and entry_price < t3:
+                        is_bottom_fishing = True
+                    elif side == "short" and entry_price > t3:
+                        is_bottom_fishing = True
+
+                t3_rearmed = bool(pos_state.get("t3_rearmed", False))
+
+                # 计算是否破位
                 if side == "long":
                     t1_hit, t2_hit, t3_hit = closed_price <= t1 - br, closed_price <= t2 - br, closed_price <= t3 - br
-                    if closed_price > t1 + rec: pos_state["t1_rearmed"] = True
-                    if closed_price > t2 + rec: pos_state["t2_rearmed"] = True
+                    if closed_price > t3: pos_state["t3_rearmed"] = True  # 向上突破T3，解除抄底豁免
                 else:
                     t1_hit, t2_hit, t3_hit = closed_price >= t1 + br, closed_price >= t2 + br, closed_price >= t3 + br
-                    if closed_price < t1 - rec: pos_state["t1_rearmed"] = True
-                    if closed_price < t2 - rec: pos_state["t2_rearmed"] = True
+                    if closed_price < t3: pos_state["t3_rearmed"] = True  # 向下突破T3，解除摸顶豁免
 
-                # The current candle is now consumed regardless of whether an order is allowed.
                 pos_state["last_checked_time"] = closed_ts
                 state[key] = pos_state
                 _save_state(state)
 
-                if immunity:
+                if int(time.time() * 1000) < int(pos_state.get("add_immunity_until_ms", 0)):
                     logger.info(f"[{symbol}] 🛡️ 尚在加仓豁免期内 (直至当前K线结束)，跳过本轮 MA 减仓。")
                     continue
 
                 async with RUNTIME.action_lock(symbol, side):
-                    # Refresh state and position inside the lock to prevent duplicate/stale actions.
-                    state = _load_state(); pos_state = state.get(key, pos_state)
+                    state = _load_state();
+                    pos_state = state.get(key, pos_state)
                     fresh = await _position_fresh(exchange, symbol, side, conf, priority="HIGH")
-                    if not fresh:
-                        continue
+                    if not fresh: continue
                     current_contracts = _position_size(fresh)
                     version = int(pos_state.get("position_version", 0))
 
+                    # ---------------- T3 终极止损判定 ----------------
                     if t3_hit:
-                        # Full exit has the strongest pre-trade validation: fresh position + fresh MA data.
-                        logger.warning(f"[{symbol}] 🚨 触发 T3({n3}) 终极 MA 破位！执行最终确认...")
-                        _, _, _, check_ts, check_close, _ = await _ma_levels(exchange, symbol, timeframe, n1, n2, n3, conf, force=True)
-                        if check_ts != closed_ts:
-                            logger.info(f"[{symbol}] T3 重新验证时出现新K线，放弃旧信号等待下一轮")
-                            continue
-                        check_atr = await _closed_atr(exchange, symbol, timeframe, int(conf.get("ma_atr_period", 14)), conf, force=True)
-                        valid = check_close <= t3 - check_atr * float(conf.get("ma_atr_buffer_multiplier", 0.30)) if side == "long" else check_close >= t3 + check_atr * float(conf.get("ma_atr_buffer_multiplier", 0.30))
-                        if valid:
-                            msg = f"[{symbol}] T3 {n3}MA 已收盘有效破位并二次确认，全平剩余仓位。"
-                            logger.error(msg); send_alert(full_config, "风控警告: T3 趋势失效", msg, symbol=symbol)
-                            success, _ = await _full_exit_with_revalidation(exchange, symbol, side, fresh, "T3 全平", conf, pos_state)
+                        if is_bottom_fishing and not t3_rearmed:
+                            logger.info(
+                                f"[{symbol}] 🎣 当前为抄底/摸顶策略 (开仓价 {entry_price} 劣于 T3 {t3:.2f})，豁免 T3 止损。")
+                        else:
+                            logger.warning(f"[{symbol}] 🚨 触发 T3({n3}) 终极 MA 破位！执行最终确认...")
+                            msg = f"[{symbol}] T3 {n3}MA 已收盘有效破位，全平剩余仓位。"
+                            logger.error(msg);
+                            send_alert(full_config, "风控警告: T3 趋势失效", msg, symbol=symbol)
+                            success, _ = await _full_exit_with_revalidation(exchange, symbol, side, fresh, "T3 全平",
+                                                                            conf, pos_state)
                             if success:
-                                snap = await _market_snapshot(exchange, symbol, conf, priority="HIGH", force=True)
-                                stops = await _find_stop_orders(exchange, symbol, side, fresh, snap["mark"], conf, force=True)
-                                await _cancel_stop_orders(exchange, symbol, stops, conf)
-                                state.pop(key, None); _save_state(state)
+                                state.pop(key, None);
+                                _save_state(state)
                                 return
 
+                    # ---------------- T2 / T1 减仓判定 ----------------
                     elif t2_hit and not bool(pos_state.get("t2_done", False)):
-                        qty = min(current_contracts, (_f(pos_state.get("base_contracts"), current_contracts) or current_contracts) * float(conf.get("tier2_ratio", 0.30)))
-                        msg = f"[{symbol}] 📉 触发 T2 ({n2}) MA 破位，按风险周期基准减仓 {qty}。"
-                        logger.warning(msg); send_alert(full_config, "风控提示: T2 减仓", msg, symbol=symbol)
-                        _, _, after = await _market_reduce_and_confirm(exchange, symbol, side, fresh, qty, "T2 减仓", conf, version, pos_state)
-                        pos_state["contracts"] = after; pos_state["t2_done"] = True
-                        state[key] = pos_state; _save_state(state)
+                        qty = min(current_contracts, (_f(pos_state.get("base_contracts"), current_contracts)) * float(
+                            conf.get("tier2_ratio", 0.30)))
+                        msg = f"[{symbol}] 📉 触发 T2 ({n2}) MA 破位，执行减仓: {qty}。"
+                        logger.warning(msg);
+                        send_alert(full_config, "风控提示: T2 减仓", msg, symbol=symbol)
+                        _, _, after = await _market_reduce_and_confirm(exchange, symbol, side, fresh, qty, "T2 减仓",
+                                                                       conf, version, pos_state)
+                        pos_state["contracts"] = after;
+                        pos_state["t2_done"] = True
+                        state[key] = pos_state;
+                        _save_state(state)
 
                     elif t1_hit and not bool(pos_state.get("t1_done", False)):
-                        qty = min(current_contracts, (_f(pos_state.get("base_contracts"), current_contracts) or current_contracts) * float(conf.get("tier1_ratio", 0.20)))
-                        msg = f"[{symbol}] 📉 触发 T1 ({n1}) MA 破位，按风险周期基准减仓 {qty}。"
-                        logger.warning(msg); send_alert(full_config, "风控提示: T1 减仓", msg, symbol=symbol)
-                        _, _, after = await _market_reduce_and_confirm(exchange, symbol, side, fresh, qty, "T1 减仓", conf, version, pos_state)
-                        pos_state["contracts"] = after; pos_state["t1_done"] = True
-                        state[key] = pos_state; _save_state(state)
-
-                    else:
-                        logger.debug(f"[{symbol}] ✅ 当前收盘价良好，未触发任何 MA 破位逻辑。")
+                        qty = min(current_contracts, (_f(pos_state.get("base_contracts"), current_contracts)) * float(
+                            conf.get("tier1_ratio", 0.20)))
+                        msg = f"[{symbol}] 📉 触发 T1 ({n1}) MA 破位，执行减仓: {qty}。"
+                        logger.warning(msg);
+                        send_alert(full_config, "风控提示: T1 减仓", msg, symbol=symbol)
+                        _, _, after = await _market_reduce_and_confirm(exchange, symbol, side, fresh, qty, "T1 减仓",
+                                                                       conf, version, pos_state)
+                        pos_state["contracts"] = after;
+                        pos_state["t1_done"] = True
+                        state[key] = pos_state;
+                        _save_state(state)
 
             except Exception as exc:
                 pass
 
+            await asyncio.sleep(5)  # 基础轮询间隔，既能及时监测异常，也不会打爆 API
+
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            logger.error(f"[{symbol}] 风控守护异常: {exc}", exc_info=True)
+            logger.error(f"[{symbol}] 风控守护异常: {exc}")
             await asyncio.sleep(5)
 
 
