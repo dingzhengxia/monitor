@@ -77,6 +77,9 @@ DEFAULT_CONFIG = {
         "api_max_concurrency": 4,
         "api_429_base_backoff_sec": 2.0,
         "api_418_cooldown_sec": 60.0,
+        "position_watch_interval_sec": 5.0,
+        "position_sync_interval_sec": 15.0,
+        "stop_maintenance_interval_sec": 60.0,
 
         "ws_reconnect_initial_sec": 1.0,
         "ws_reconnect_max_sec": 60.0,
@@ -291,6 +294,8 @@ class Runtime:
         self.rest = RestGuardian()
         self.action_locks = {}
         self.positions_cache = (0.0, None)
+        self.global_position_snapshot = {}
+        self.global_position_snapshot_time = 0.0
         self.ticker_cache = {}
         self.orders_cache = {}
         self.ohlcv_cache = {}
@@ -636,14 +641,20 @@ async def _full_exit_with_revalidation(exchange, symbol, side, position, reason,
 # ---------------------------------------------------------------------------
 
 LAST_STOP_ORDER_TIME = {}
+LAST_STOP_MAINTAIN_TIME = {}
 
 # 修复止损单疯狂撤单重挂死循环问题，增加防抖与阈值过滤
 async def _ensure_disaster_stop(exchange, symbol, side, pos, current_price, conf, force_replace=False):
     if not bool(conf.get("exchange_hard_stop_enabled", True)):
         return
 
-    global LAST_STOP_ORDER_TIME
-    if time.time() - LAST_STOP_ORDER_TIME.get(symbol, 0) < 10.0:
+    global LAST_STOP_ORDER_TIME, LAST_STOP_MAINTAIN_TIME
+    now_ts = time.time()
+    interval = float(conf.get("stop_maintenance_interval_sec", 60.0))
+    if now_ts - LAST_STOP_MAINTAIN_TIME.get(symbol, 0) < interval and not force_replace:
+        return
+    LAST_STOP_MAINTAIN_TIME[symbol] = now_ts
+    if now_ts - LAST_STOP_ORDER_TIME.get(symbol, 0) < 10.0:
         return
 
     try:
@@ -748,7 +759,7 @@ async def watch_symbol_position(exchange, symbol):
 
             timeframe = str(conf.get("timeframe", "1h"))
 
-            positions = await _fetch_positions(exchange, conf, symbols=[symbol], priority="NORMAL", force=True)
+            positions = await _fetch_positions(exchange, conf, symbols=[symbol], priority="NORMAL", force=False)
             pos = next((p for p in positions if _position_size(p) > 0 and _position_side(p) in ("long", "short")), None)
 
             if not pos:
@@ -940,6 +951,7 @@ async def watch_symbol_position(exchange, symbol):
 # ---------------------------------------------------------------------------
 
 async def protect_positions_main(exchange, config=None):
+    # 100仓位优化版：主循环负责同步，子协程共享缓存，避免每个仓位重复打REST
     full_config = _load_config()
     conf = full_config.get("position_protection", {})
     if not conf.get("enabled", True):
@@ -986,7 +998,7 @@ async def protect_positions_main(exchange, config=None):
                 await cleanup_orphaned_state_and_orders(exchange, conf)
                 last_cleanup = time.time()
 
-            await asyncio.sleep(max(3.0, float(conf.get("positions_cache_ttl_sec", 5))))
+            await asyncio.sleep(max(3.0, float(conf.get("position_sync_interval_sec", 15))))
 
         except asyncio.CancelledError:
             raise
