@@ -294,7 +294,7 @@
       "timeout_seconds": 30
     }
   },
-   "position_protection": {
+  "position_protection": {
     "enabled": true,
     "timeframe": "1h",
     "n1_bars": 7,
@@ -320,13 +320,7 @@
     "api_failure_threshold": 5,
     "api_circuit_breaker_cooldown_sec": 30,
     "api_min_interval_sec": 0.06,
-    "api_429_base_backoff_sec": 2.0,
-    "api_418_cooldown_sec": 60.0,
-    "ws_reconnect_initial_sec": 1.0,
-    "ws_reconnect_max_sec": 60.0,
-    "ws_reconnect_jitter_pct": 0.20,
     "ws_stale_sec": 45.0,
-    "safe_mode_enabled": true,
-    "price_source_tolerance_pct": 0.01
+    "safe_mode_enabled": true
   }
 }
