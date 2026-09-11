@@ -886,7 +886,7 @@ async def watch_symbol_position(exchange, symbol):
 
             # ---------------- 紧急止损 1：放量加速 / 黑天鹅 (市价 Taker) ----------------
             try:
-                emergency, details = await _emergency_signal(exchange, symbol, side, conf, live_rows=ohlcv_rows)
+                emergency, details = await _emergency_signal(exchange, symbol, side, conf)
 
                 if details and details.get("volume_crash"):
                     logger.warning(f"[{symbol}] ⚠️ 侦测到局部异常放量！伴随极速反向位移！")
