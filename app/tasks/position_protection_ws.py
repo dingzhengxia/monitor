@@ -566,15 +566,17 @@ async def _emergency_signal(exchange, symbol, side, conf, live_rows=None, force_
     # 放量判定：瞬间超过 20周期均量的 2.5 倍
     is_volume_spike = bool(vol_ma and vol_ma > 0 and live_vol > vol_ma * 2.5)
 
+    # 修改后：计算真实的逆向位移，并使用配置参数 mult 代替硬编码的 1.5
     if side == "long":
-        move = float(live["high"] - ws_price)
+        # 只有当前价格低于开盘价时，才算作真正的异常下跌，避免惩罚冲高回落的上影线
+        move = float(live["open"] - ws_price) if ws_price < live["open"] else 0.0
         structure = ws_price < float(closed["low"].iloc[-lookback:].min())
-        # 放量加速判定：放量的同时，极速位移超过 1.5 ATR
-        volume_crash = is_volume_spike and move >= (atr * 1.5)
+        volume_crash = is_volume_spike and move >= (atr * mult)
     else:
-        move = float(ws_price - live["low"])
+        # 只有当前价格高于开盘价时，才算作真正的异常拉升
+        move = float(ws_price - live["open"]) if ws_price > live["open"] else 0.0
         structure = ws_price > float(closed["high"].iloc[-lookback:].max())
-        volume_crash = is_volume_spike and move >= (atr * 1.5)
+        volume_crash = is_volume_spike and move >= (atr * mult)
 
     is_emergency = bool((move >= threshold and structure) or volume_crash)
     reason = "放量加速暴跌" if volume_crash else "结构性黑天鹅"
