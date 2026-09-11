@@ -784,12 +784,32 @@ def _reconcile_position_state(state, key, symbol, side, contracts, timeframe):
             "t1_done": False,
             "t2_done": False,
             "last_checked_time": 0,
+            "last_closed_candle_ts": 0,
+            "last_risk_check_time": 0,
+            "risk_state": {
+                "t1": "normal",
+                "t2": "normal",
+                "t3": "normal",
+                "black_swan": "normal",
+                "atr_protection": "normal"
+            },
             "position_version": 1,
             "risk_cycle_started_at": int(time.time()),
             "add_immunity_until_ms": 0,
         }
         state[key] = ps
         return ps, True
+
+    # 兼容旧版本 position_protection_state.json，自动补充风控恢复字段
+    ps.setdefault("last_closed_candle_ts", int(ps.get("last_checked_time", 0)))
+    ps.setdefault("last_risk_check_time", 0)
+    ps.setdefault("risk_state", {
+        "t1": "done" if ps.get("t1_done") else "normal",
+        "t2": "done" if ps.get("t2_done") else "normal",
+        "t3": "normal",
+        "black_swan": "normal",
+        "atr_protection": "normal"
+    })
 
     old = _f(ps.get("contracts"), contracts) or contracts
     changed = not math.isclose(old, contracts, rel_tol=1e-8, abs_tol=1e-10)
@@ -1035,6 +1055,15 @@ async def watch_symbol_position(exchange, symbol):
                             logger.success(f"[{symbol}] 💡 识破假突破！未超出 {br:.2f} 缓冲区，判定为假突破，继续持有。")
 
                     pos_state["last_checked_time"] = closed_ts
+                    pos_state["last_closed_candle_ts"] = closed_ts
+                    pos_state["last_risk_check_time"] = int(time.time())
+                    pos_state["risk_state"] = {
+                        "t1": "triggered" if t1_hit else ("done" if pos_state.get("t1_done") else "normal"),
+                        "t2": "triggered" if t2_hit else ("done" if pos_state.get("t2_done") else "normal"),
+                        "t3": "triggered" if t3_hit else "normal",
+                        "black_swan": "normal",
+                        "atr_protection": "normal"
+                    }
                     state[key] = pos_state
                     _save_state(state)
 
