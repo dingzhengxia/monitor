@@ -306,6 +306,7 @@
     "ma_atr_buffer_multiplier": 0.30,
     "recovery_atr_buffer_multiplier": 0.30,
     "add_immunity_mode": "until_current_candle_close",
+    "emergency_enabled": false,
     "emergency_timeframe": "15m",
     "emergency_atr_period": 14,
     "emergency_atr_multiplier": 3.0,
