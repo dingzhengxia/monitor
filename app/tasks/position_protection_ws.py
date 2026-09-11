@@ -721,6 +721,7 @@ async def _full_exit_with_revalidation(exchange, symbol, side, position, reason,
 
 LAST_STOP_ORDER_TIME = {}
 LAST_STOP_MAINTAIN_TIME = {}
+LAST_RISK_LOG_TIME = {}
 
 
 async def _ensure_disaster_stop(exchange, symbol, side, pos, current_price, conf, ohlcv_rows=None, force_replace=False):
@@ -883,11 +884,25 @@ async def watch_symbol_position(exchange, symbol):
             async with RUNTIME.action_lock(symbol, side):
                 snap = await _market_snapshot(exchange, symbol, conf, priority="NORMAL")
                 current_price = snap["mark"]
-                await _ensure_disaster_stop(exchange, symbol, side, pos, current_price, conf, ohlcv_rows=ohlcv_rows, force_replace=changed)
+
+                # 风控状态日志：确认行情链路正常
+                logger.debug(f"[{symbol}] 行情检查正常 | 当前价:{current_price} | 方向:{side}")
+
+                try:
+                    await _ensure_disaster_stop(exchange, symbol, side, pos, current_price, conf, ohlcv_rows=ohlcv_rows, force_replace=changed)
+                except Exception as e:
+                    logger.error(f"[{symbol}] 交易所兜底止损异常，不影响内部风控继续运行: {e}")
 
             # ---------------- 紧急止损 1：放量加速 / 黑天鹅 (市价 Taker) ----------------
             try:
                 emergency, details = await _emergency_signal(exchange, symbol, side, conf)
+
+                if details:
+                    logger.debug(
+                        f"[{symbol}] 黑天鹅监控 | 当前波动:{details.get('move',0):.4f} | "
+                        f"触发阈值:{details.get('threshold',0):.4f} | "
+                        f"状态:{'触发' if emergency else '正常'}"
+                    )
 
                 if details and details.get("volume_crash"):
                     logger.warning(f"[{symbol}] ⚠️ 侦测到局部异常放量！伴随极速反向位移！")
@@ -936,6 +951,33 @@ async def watch_symbol_position(exchange, symbol):
                 atr = _atr_from_rows(ohlcv_rows, int(conf.get("ma_atr_period", 14)))
                 br = atr * float(conf.get("ma_atr_buffer_multiplier", 0.30))
                 rec = atr * float(conf.get("recovery_atr_buffer_multiplier", 0.30))
+
+                # 内部MA风控透明日志（不改变触发逻辑）
+                now_risk = time.time()
+                if now_risk - LAST_RISK_LOG_TIME.get(symbol, 0) >= 60:
+                    if side == "long":
+                        t1_trigger, t2_trigger, t3_trigger = t1-br, t2-br, t3-br
+                        states = (
+                            closed_price <= t1_trigger,
+                            closed_price <= t2_trigger,
+                            closed_price <= t3_trigger,
+                        )
+                    else:
+                        t1_trigger, t2_trigger, t3_trigger = t1+br, t2+br, t3+br
+                        states = (
+                            closed_price >= t1_trigger,
+                            closed_price >= t2_trigger,
+                            closed_price >= t3_trigger,
+                        )
+
+                    logger.info(
+                        f"[{symbol}] 🛡️ 内部风控状态 | 方向:{side} | 当前价:{current_price} | 开仓:{entry_price}\n"
+                        f"T1({n1}MA): {t1:.4f} 触发:{t1_trigger:.4f} 状态:{'触发' if states[0] else '正常'}\n"
+                        f"T2({n2}MA): {t2:.4f} 触发:{t2_trigger:.4f} 状态:{'触发' if states[1] else '正常'}\n"
+                        f"T3({n3}MA): {t3:.4f} 触发:{t3_trigger:.4f} 状态:{'触发' if states[2] else '正常'}\n"
+                        f"ATR:{atr:.4f} 缓冲:{br:.4f} 最近收盘:{closed_price:.4f}"
+                    )
+                    LAST_RISK_LOG_TIME[symbol] = now_risk
 
                 version = int(pos_state.get("position_version", 0))
                 processed_version = int(pos_state.get("processed_entry_version", 0))
