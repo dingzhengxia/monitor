@@ -888,7 +888,7 @@ async def watch_symbol_position(exchange, symbol):
 
             now_time = time.time()
             if now_time - last_heartbeat_time > 60:
-                logger.info(f"[{symbol}] 🛡️ 巡检中... 当前{ '做多' if side=='long' else '做空' }仓位: {contracts} | 开仓均价: {entry_price}")
+                logger.debug(f"[{symbol}] 🛡️ 巡检中... 当前{ '做多' if side=='long' else '做空' }仓位: {contracts} | 开仓均价: {entry_price}")
                 last_heartbeat_time = now_time
 
             state = _load_state()
