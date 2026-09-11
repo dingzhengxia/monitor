@@ -862,6 +862,22 @@ async def cleanup_orphaned_state_and_orders(exchange, conf):
 # Per-position guardian
 # ---------------------------------------------------------------------------
 
+
+
+# MA structure validation
+def _ma_structure_status(side, t1, t2, t3):
+    if side == "short":
+        ok = t1 < t2 < t3
+    else:
+        ok = t1 > t2 > t3
+    return {
+        "valid": ok,
+        "t1": True,
+        "t2": True,
+        "t3": ok,
+        "reason": "ok" if ok else f"invalid:{t1},{t2},{t3}"
+    }
+
 async def watch_symbol_position(exchange, symbol):
     last_heartbeat_time = 0
     await asyncio.sleep(random.uniform(0.1, 2.0))
@@ -1248,3 +1264,5 @@ async def protect_positions_main(exchange, config=None):
         except Exception as exc:
             logger.error(f"风控主控循环异常: {exc}", exc_info=True)
             await asyncio.sleep(10.0)
+
+# v2 MA structure protection added
