@@ -529,6 +529,7 @@ async def _emergency_signal(exchange, symbol, side, conf, live_rows=None):
     tf = str(conf.get("emergency_timeframe", "15m"))
     period = int(conf.get("emergency_atr_period", 14))
     mult = float(conf.get("emergency_atr_multiplier", 3.0))
+    volmult = float(conf.get("emergency_vol_multiplier", 1.0))
     lookback = int(conf.get("emergency_structure_lookback", 4))
     limit = max(period + lookback + 25, 60)
 
@@ -549,7 +550,7 @@ async def _emergency_signal(exchange, symbol, side, conf, live_rows=None):
     live_vol = float(live["volume"])
     threshold = atr * mult
 
-    is_volume_spike = bool(vol_ma and vol_ma > 0 and live_vol > vol_ma * 2.5)
+    is_volume_spike = bool(vol_ma and vol_ma > 0 and live_vol > vol_ma * volmult)
 
     if side == "long":
         move = float(live["open"] - ws_price) if ws_price < live["open"] else 0.0
