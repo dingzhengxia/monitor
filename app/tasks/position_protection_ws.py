@@ -722,6 +722,7 @@ async def _full_exit_with_revalidation(exchange, symbol, side, position, reason,
 LAST_STOP_ORDER_TIME = {}
 LAST_STOP_MAINTAIN_TIME = {}
 LAST_RISK_LOG_TIME = {}
+LAST_RISK_STATE_LOG_TIME = {}
 
 
 async def _ensure_disaster_stop(exchange, symbol, side, pos, current_price, conf, ohlcv_rows=None, force_replace=False):
@@ -918,9 +919,12 @@ async def watch_symbol_position(exchange, symbol):
                 emergency, details = await _emergency_signal(exchange, symbol, side, conf)
 
                 if details:
-                    logger.debug(
-                        f"[{symbol}] 黑天鹅监控 | 当前波动:{details.get('move',0):.4f} | "
+                    logger.info(
+                        f"[{symbol}] 🚨 黑天鹅监控 | 方向:{side} | "
+                        f"当前波动:{details.get('move',0):.4f} | "
                         f"触发阈值:{details.get('threshold',0):.4f} | "
+                        f"成交量异常:{details.get('volume_crash',False)} | "
+                        f"结构确认:{details.get('structure',False)} | "
                         f"状态:{'触发' if emergency else '正常'}"
                     )
 
@@ -990,6 +994,13 @@ async def watch_symbol_position(exchange, symbol):
                             closed_price >= t3_trigger,
                         )
 
+                    # 实时风险状态：价格进入触发区，但仍等待4H收盘确认执行
+                    realtime_states = None
+                    if side == "long":
+                        realtime_states = (current_price <= t1_trigger, current_price <= t2_trigger, current_price <= t3_trigger)
+                    else:
+                        realtime_states = (current_price >= t1_trigger, current_price >= t2_trigger, current_price >= t3_trigger)
+
                     logger.info(
                         f"[{symbol}] 🛡️ 内部风控状态 | 方向:{side} | 当前价:{current_price} | 开仓:{entry_price}\n"
                         f"T1({n1}MA): {t1:.4f} 触发:{t1_trigger:.4f} 状态:{'触发' if states[0] else '正常'}\n"
@@ -998,6 +1009,35 @@ async def watch_symbol_position(exchange, symbol):
                         f"ATR:{atr:.4f} 缓冲:{br:.4f} 最近收盘:{closed_price:.4f}"
                     )
                     LAST_RISK_LOG_TIME[symbol] = now_risk
+
+                # 实时预警：不执行止损，只记录进入风险区，等待4H确认
+                if side == "long":
+                    realtime_warning = {
+                        "t1": current_price <= t1-br,
+                        "t2": current_price <= t2-br,
+                        "t3": current_price <= t3-br,
+                    }
+                else:
+                    realtime_warning = {
+                        "t1": current_price >= t1+br,
+                        "t2": current_price >= t2+br,
+                        "t3": current_price >= t3+br,
+                    }
+
+                pos_state.setdefault("risk_state", {})
+                pos_state["risk_state"]["realtime_warning"] = realtime_warning
+                pos_state["risk_state"]["last_price"] = current_price
+                pos_state["risk_state"]["last_update_time"] = int(time.time())
+
+                if any(realtime_warning.values()):
+                    logger.warning(
+                        f"[{symbol}] ⚠️ 实时风险预警(等待{timeframe}收盘确认) | "
+                        f"T1:{realtime_warning['t1']} T2:{realtime_warning['t2']} T3:{realtime_warning['t3']} | "
+                        f"当前:{current_price}"
+                    )
+
+                state[key] = pos_state
+                _save_state(state)
 
                 version = int(pos_state.get("position_version", 0))
                 processed_version = int(pos_state.get("processed_entry_version", 0))
