@@ -133,7 +133,6 @@ def _load_state():
         return {}
 
 
-# 修复文件锁报错 Device or resource busy
 def _save_state(state):
     try:
         with STATE_FILE.open("w", encoding="utf-8") as f:
@@ -316,7 +315,6 @@ async def _rest(exchange, method_name, *args, priority="NORMAL", conf=None, **kw
     return await RUNTIME.rest.call(getattr(exchange, method_name), *args, priority=priority, conf=conf, **kwargs)
 
 
-# 修复 CCXT 查询空列表不返回全部持仓的静默 BUG
 async def _fetch_positions(exchange, conf, symbols=None, priority="NORMAL", force=False):
     ttl = float(conf.get("positions_cache_ttl_sec", 5))
     now = time.monotonic()
@@ -375,7 +373,6 @@ def _algo_trigger(order):
     return _f(order.get("triggerPrice") or order.get("stopPrice"))
 
 
-# 放宽验证机制：避免疯狂重复挂单止损
 def _is_program_stop(order, side, position_side, current_price=None):
     if not isinstance(order, dict):
         return False
@@ -537,7 +534,8 @@ async def _two_source_price_ok(exchange, symbol, ws_price, side, conf):
     return True, snap
 
 
-# 【核心逻辑升级】：加入放量加速判定，无视均线极速熔断
+# 【修复1】：更换放量加速判定基准，从最高/最低点改为开盘价，避免将插针利润回吐误判为黑天鹅。
+# 并且彻底使用配置参数 mult，抛弃硬编码的 1.5。
 async def _emergency_signal(exchange, symbol, side, conf, live_rows=None, force_rest=False):
     tf = str(conf.get("emergency_timeframe", "15m"))
     period = int(conf.get("emergency_atr_period", 14))
@@ -566,20 +564,19 @@ async def _emergency_signal(exchange, symbol, side, conf, live_rows=None, force_
     # 放量判定：瞬间超过 20周期均量的 2.5 倍
     is_volume_spike = bool(vol_ma and vol_ma > 0 and live_vol > vol_ma * 2.5)
 
-    # 修改后：计算真实的逆向位移，并使用配置参数 mult 代替硬编码的 1.5
     if side == "long":
-        # 只有当前价格低于开盘价时，才算作真正的异常下跌，避免惩罚冲高回落的上影线
+        # 修复：只有当前价格跌破开盘价时，才算异常暴跌位移。避免对盈利长上影线触发惩罚
         move = float(live["open"] - ws_price) if ws_price < live["open"] else 0.0
         structure = ws_price < float(closed["low"].iloc[-lookback:].min())
         volume_crash = is_volume_spike and move >= (atr * mult)
     else:
-        # 只有当前价格高于开盘价时，才算作真正的异常拉升
+        # 修复：只有当前价格拉升超开盘价时，才算异常拉升位移。
         move = float(ws_price - live["open"]) if ws_price > live["open"] else 0.0
         structure = ws_price > float(closed["high"].iloc[-lookback:].max())
         volume_crash = is_volume_spike and move >= (atr * mult)
 
     is_emergency = bool((move >= threshold and structure) or volume_crash)
-    reason = "放量加速暴跌" if volume_crash else "结构性黑天鹅"
+    reason = "放量加速暴跌/拉升" if volume_crash else "结构性黑天鹅"
 
     return is_emergency, {
         "ws_price": ws_price, "move": move, "threshold": threshold,
@@ -645,7 +642,7 @@ async def _full_exit_with_revalidation(exchange, symbol, side, position, reason,
 LAST_STOP_ORDER_TIME = {}
 LAST_STOP_MAINTAIN_TIME = {}
 
-# 修复止损单疯狂撤单重挂死循环问题，增加防抖与阈值过滤
+# 【修复2】：引入止损棘轮机制，严禁兜底止损发生反向退让
 async def _ensure_disaster_stop(exchange, symbol, side, pos, current_price, conf, force_replace=False):
     if not bool(conf.get("exchange_hard_stop_enabled", True)):
         return
@@ -667,8 +664,17 @@ async def _ensure_disaster_stop(exchange, symbol, side, pos, current_price, conf
         needs_update = False
         if stops:
             existing_trigger = _algo_trigger(stops[0])
+
+            # --- 新增：禁止止损单反向移动棘轮锁 ---
+            if existing_trigger:
+                if side == "long" and stop < existing_trigger:
+                    stop = existing_trigger  # 做多时，新算出的止损比旧的低，强制用旧的高点止损
+                elif side == "short" and stop > existing_trigger:
+                    stop = existing_trigger  # 做空时，新算出的止损比旧的高，强制用旧的低点止损
+            # -----------------------------------
+
             if existing_trigger and abs(existing_trigger - stop) / stop > 0.015:
-                logger.info(f"[{symbol}] ⚠️ 止损单偏差过大 (现价:{existing_trigger} 目标:{stop})，准备重置。")
+                logger.info(f"[{symbol}] ⚠️ 止损单向盈利方向推进或偏差过大 (现价:{existing_trigger} 目标:{stop})，准备重置。")
                 needs_update = True
 
         if stops and not force_replace and not needs_update:
@@ -749,7 +755,7 @@ async def cleanup_orphaned_state_and_orders(exchange, conf):
 
 async def watch_symbol_position(exchange, symbol):
     last_heartbeat_time = 0
-    logger.info(f"[{symbol}] 👁️ 已成功启动高级风控守护协程 (MA防插针真破位 + 智能左侧抄底 + 放量应急熔断)")
+    logger.info(f"[{symbol}] 👁️ 已成功启动高级风控守护协程 (修复版：插针熔断修复 + 兜底止损棘轮 + 实时抄底保护)")
 
     while True:
         try:
@@ -804,9 +810,8 @@ async def watch_symbol_position(exchange, symbol):
             try:
                 emergency, details = await _emergency_signal(exchange, symbol, side, conf, force_rest=True)
 
-                # 提前预警日志
                 if details and details.get("volume_crash"):
-                    logger.warning(f"[{symbol}] ⚠️ 侦测到局部异常放量！伴随极速位移，请密切关注！")
+                    logger.warning(f"[{symbol}] ⚠️ 侦测到局部异常放量！伴随极速反向位移，请密切关注！")
                 elif details and details["move"] >= details["threshold"] * 0.8:
                     logger.warning(f"[{symbol}] 🚨 行情波动逼近熔断阈值！当前波动: {details['move']:.2f} (阈值: {details['threshold']:.2f})")
 
@@ -825,6 +830,26 @@ async def watch_symbol_position(exchange, symbol):
                                     return
             except Exception:
                 pass
+
+            # 【修复3】：将抄底专属止损移出 K线收盘循环，实行实时 (Real-time) Tick 级拦截
+            try:
+                if pos_state.get("t3_waived") and pos_state.get("bottom_fish_sl"):
+                    realtime_bf_sl = float(pos_state["bottom_fish_sl"])
+                    if (side == "long" and current_price <= realtime_bf_sl) or \
+                       (side == "short" and current_price >= realtime_bf_sl):
+                        async with RUNTIME.action_lock(symbol, side):
+                            fresh = await _position_fresh(exchange, symbol, side, conf, priority="HIGH")
+                            if fresh:
+                                msg = f"[{symbol}] 💔 实时跌破 3ATR 专属抄底保护线，无条件全平剩余仓位！"
+                                logger.error(msg); send_alert(full_config, "风控警告: 实时抄底止损", msg, symbol=symbol)
+                                success, _ = await _full_exit_with_revalidation(exchange, symbol, side, fresh, "抄底实时全平", conf, pos_state)
+                                if success:
+                                    state = _load_state()
+                                    state.pop(key, None)
+                                    _save_state(state)
+                                    return
+            except Exception as e:
+                logger.error(f"[{symbol}] 实时抄底止损检查异常: {e}")
 
             # ---------------- 智能 MA 与 真假破位识别 ----------------
             try:
@@ -868,33 +893,35 @@ async def watch_symbol_position(exchange, symbol):
                     logger.info(f"[{symbol}] 📈 {timeframe} K线收盘验证！实体收盘价:{closed_price} | T1:{t1:.2f} | T2:{t2:.2f} | T3(终极):{t3:.2f} | 缓冲带:{br:.2f}")
 
                     if side == "long":
-                        if closed_price > t1 + rec and pos_state.get("t1_done"):
-                            pos_state["t1_done"] = False; logger.info(f"[{symbol}] 🛡️ 价格重回 T1 上方，T1 止损盾重装！")
-                        if closed_price > t2 + rec and pos_state.get("t2_done"):
-                            pos_state["t2_done"] = False; logger.info(f"[{symbol}] 🛡️ 价格重回 T2 上方，T2 止损盾重装！")
+                        # 【修复4】：注释掉震荡市反复重装 T1/T2 护盾的逻辑，防止仓位被来回摩擦抽干
+                        # if closed_price > t1 + rec and pos_state.get("t1_done"):
+                        #     pos_state["t1_done"] = False; logger.info(...)
+                        # if closed_price > t2 + rec and pos_state.get("t2_done"):
+                        #     pos_state["t2_done"] = False; logger.info(...)
+
+                        # 仅保留抄底成功脱离危险区后的 T3 护盾重装
                         if closed_price > t3 + rec and pos_state.get("t3_waived"):
                             pos_state["t3_waived"] = False; logger.info(f"[{symbol}] 🚀 抄底成功！价格站上 T3，撤销固定止损，T3 移动跟撤盾重装！")
 
                         t1_hit = closed_price <= t1 - br and not pos_state.get("t1_done")
                         t2_hit = closed_price <= t2 - br and not pos_state.get("t2_done")
                         t3_hit = closed_price <= t3 - br and not pos_state.get("t3_waived")
-                        bf_hit = pos_state.get("t3_waived", False) and closed_price <= pos_state.get("bottom_fish_sl", 0) - br
 
                         if (closed_price <= t3) and (closed_price > t3 - br) and not pos_state.get("t3_waived"):
                             logger.success(f"[{symbol}] 💡 识破假跌破/诱空！收盘价虽低于T3，但未超出 {br:.2f} 的噪音缓冲带，判定为假跌破，继续死拿！")
 
                     else: # Short
-                        if closed_price < t1 - rec and pos_state.get("t1_done"):
-                            pos_state["t1_done"] = False
-                        if closed_price < t2 - rec and pos_state.get("t2_done"):
-                            pos_state["t2_done"] = False
+                        # 【修复4】：注释掉震荡市反复重装 T1/T2 护盾的逻辑
+                        # if closed_price < t1 - rec and pos_state.get("t1_done"):
+                        #     pos_state["t1_done"] = False
+                        # if closed_price < t2 - rec and pos_state.get("t2_done"):
+                        #     pos_state["t2_done"] = False
                         if closed_price < t3 - rec and pos_state.get("t3_waived"):
                             pos_state["t3_waived"] = False
 
                         t1_hit = closed_price >= t1 + br and not pos_state.get("t1_done")
                         t2_hit = closed_price >= t2 + br and not pos_state.get("t2_done")
                         t3_hit = closed_price >= t3 + br and not pos_state.get("t3_waived")
-                        bf_hit = pos_state.get("t3_waived", False) and closed_price >= pos_state.get("bottom_fish_sl", float('inf')) + br
 
                         if (closed_price >= t3) and (closed_price < t3 + br) and not pos_state.get("t3_waived"):
                             logger.success(f"[{symbol}] 💡 识破假突破/诱多！收盘价虽高于T3，但未超出 {br:.2f} 的噪音缓冲带，判定为假突破，继续死拿！")
@@ -908,13 +935,7 @@ async def watch_symbol_position(exchange, symbol):
                         if not fresh: continue
                         current_contracts = _position_size(fresh)
 
-                        if bf_hit:
-                            msg = f"[{symbol}] 💔 左侧抄底失败！有效跌破 3ATR 专属保护线，无条件全平剩余仓位。"
-                            logger.error(msg); send_alert(full_config, "风控警告: 抄底止损", msg, symbol=symbol)
-                            success, _ = await _full_exit_with_revalidation(exchange, symbol, side, fresh, "抄底专属止损", conf, pos_state)
-                            if success: state.pop(key, None); _save_state(state); return
-
-                        elif t3_hit:
+                        if t3_hit:
                             msg = f"[{symbol}] 🚨 T3 {n3}MA 已发生【真破位】，右侧趋势彻底失效，全平剩余仓位。"
                             logger.error(msg); send_alert(full_config, "风控警告: T3 趋势失效", msg, symbol=symbol)
                             success, _ = await _full_exit_with_revalidation(exchange, symbol, side, fresh, "T3 全平", conf, pos_state)
@@ -953,7 +974,6 @@ async def watch_symbol_position(exchange, symbol):
 # ---------------------------------------------------------------------------
 
 async def protect_positions_main(exchange, config=None):
-    # 100仓位优化版：主循环负责同步，子协程共享缓存，避免每个仓位重复打REST
     full_config = _load_config()
     conf = full_config.get("position_protection", {})
     if not conf.get("enabled", True):
@@ -961,7 +981,7 @@ async def protect_positions_main(exchange, config=None):
         return
 
     _algo_methods(exchange)
-    logger.info("🛡️ 风控中枢启动：高级MA护航 + 黑天鹅应急 + 灾难止损")
+    logger.info("🛡️ 风控中枢启动：高级MA护航 + 黑天鹅应急 + 灾难止损 (修复增强版)")
     await cleanup_orphaned_state_and_orders(exchange, conf)
 
     tasks = {}
