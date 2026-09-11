@@ -527,7 +527,7 @@ async def _two_source_price_ok(exchange, symbol, ws_price, side, conf):
 
 async def _emergency_signal(exchange, symbol, side, conf, live_rows=None):
     tf = str(conf.get("emergency_timeframe", "15m"))
-    enabled = bool(conf.get("emergency_enabled", False))
+    enabled = conf.get("emergency_enabled", True)
     if not enabled:
         return False, None
     period = int(conf.get("emergency_atr_period", 14))
