@@ -314,7 +314,7 @@
     "hard_stop_timeframe": "4h",
     "hard_stop_atr_period": 14,
     "hard_stop_min_distance_pct": 0.05,
-    "hard_stop_atr_multiplier": 6.0,
+    "hard_stop_atr_multiplier": 3.0,
     "api_max_concurrency": 4,
     "api_max_retries": 5,
     "api_failure_threshold": 5,
