@@ -615,7 +615,7 @@ async def _market_reduce_and_confirm(exchange, symbol, side, position, requested
 
 async def _limit_reduce_with_maker_retry(
     exchange, symbol, side, position, requested_qty, reason, conf, expected_version, pos_state,
-    max_retries=5, check_interval_sec=1.0, timeout_sec=5.0
+    max_retries=15, check_interval_sec=1.0, timeout_sec=10.0
 ):
     """非紧急止损：使用限价单（Maker 挂单）执行，未成交则撤单并更新以‘价1’继续挂单重试"""
     raw_ps = _raw_position_side(position)
