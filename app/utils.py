@@ -1,6 +1,6 @@
 from datetime import datetime, timedelta, timezone
 
-ALERT_STATUS_FILE = 'cooldown_status.json'
+ALERT_STATUS_FILE = '/usr/src/app/data/cooldown_status.json'
 
 def timeframe_to_minutes(tf_str):
     try:

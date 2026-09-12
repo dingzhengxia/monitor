@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 import queue
 from loguru import logger
 
-ALERT_STATUS_FILE = 'cooldown_status.json'
+ALERT_STATUS_FILE = '/usr/src/app/data/cooldown_status.json'
 
 # 全局共享的状态变量
 alerted_states = {}

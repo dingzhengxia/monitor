@@ -27,7 +27,7 @@ from loguru import logger
 
 from app.services.notification_service import send_alert
 
-STATE_FILE = Path("position_protection_state.json")
+STATE_FILE = Path("/usr/src/app/data/position_protection_state.json")
 CONFIG_FILE = Path("config/config.json")
 if not CONFIG_FILE.exists():
     CONFIG_FILE = Path("config.json")
