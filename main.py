@@ -32,7 +32,7 @@ from app.services.notification_service import notification_consumer
 from app.state import load_alert_states, save_alert_states
 from app.tasks.periodic_reporter import run_periodic_report
 from app.tasks.signal_scanner import run_signal_check_cycle
-from app.tasks.position_protection_ws import protect_positions_main
+from app.tasks.position_protection import protect_positions_main
 from app.utils import timeframe_to_minutes
 
 
