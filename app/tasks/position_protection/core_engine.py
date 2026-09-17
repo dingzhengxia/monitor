@@ -525,10 +525,11 @@ def _position_open_time_ms(position):
     if not position:
         return 0
     info = position.get("info") or {}
+    # 注意：不要把 Binance 的 updateTime 当作“开仓时间”。
+    # updateTime 会随着减仓/仓位变化而变化，用它做风险周期 ID 会误判成新仓。
     candidates = (
-        position.get("openedAt"), position.get("openTime"), position.get("timestamp"),
+        position.get("openedAt"), position.get("openTime"),
         info.get("openTime"), info.get("openedAt"), info.get("createTime"),
-        info.get("updateTime"),
     )
     for value in candidates:
         v = _f(value, 0) or 0
@@ -538,6 +539,23 @@ def _position_open_time_ms(position):
                 v *= 1000
             return int(v)
     return 0
+
+
+def _position_identity(position, side=None):
+    """生成本次持仓风险周期的身份标识。
+
+    优先使用交易所提供的真实开仓时间；若交易所未提供，则使用
+    entryPrice 作为辅助身份信息。手动平仓后的空仓状态由 watcher 清理，
+    因此重新开仓会从空状态建立新的风险周期。
+    """
+    if not position:
+        return ""
+    side = side or _position_side(position) or ""
+    entry_price = _f(position.get("entryPrice"), 0.0) or 0.0
+    open_time = _position_open_time_ms(position)
+    if open_time:
+        return f"{side}|open:{open_time}|entry:{entry_price:.12f}"
+    return f"{side}|entry:{entry_price:.12f}"
 
 
 def _ma_levels_at_entry_time(rows, n1, n2, n3, entry_time_ms):
@@ -878,6 +896,10 @@ def _reconcile_position_state(state, key, symbol, side, contracts, timeframe, po
             "contracts": contracts,
             "t1_done": False,
             "t2_done": False,
+            # 一次性动作锁：触发动作一旦启动，即使执行过程异常也不能重复推送/重复减仓。
+            "t1_triggered": False,
+            "t2_triggered": False,
+            "t3_triggered": False,
             "last_checked_time": 0,
             "last_closed_candle_ts": 0,
             "last_risk_check_time": 0,
@@ -896,6 +918,7 @@ def _reconcile_position_state(state, key, symbol, side, contracts, timeframe, po
             "entry_classification": None,
             "risk_entry_price": _f((position or {}).get("entryPrice"), 0.0),
             "risk_entry_price_source": "position_average",
+            "position_identity": _position_identity(position, side),
         }
         state[key] = ps
         return ps, True
@@ -908,6 +931,10 @@ def _reconcile_position_state(state, key, symbol, side, contracts, timeframe, po
     ps.setdefault("risk_entry_price", _f((position or {}).get("entryPrice"), 0.0))
     ps.setdefault("risk_entry_price_source", "position_average")
     ps.setdefault("last_risk_check_time", 0)
+    ps.setdefault("t1_triggered", bool(ps.get("t1_done")))
+    ps.setdefault("t2_triggered", bool(ps.get("t2_done")))
+    ps.setdefault("t3_triggered", False)
+    ps.setdefault("position_identity", _position_identity(position, side))
     ps.setdefault("risk_state", {
         "t1": "done" if ps.get("t1_done") else "normal",
         "t2": "done" if ps.get("t2_done") else "normal",
@@ -916,8 +943,47 @@ def _reconcile_position_state(state, key, symbol, side, contracts, timeframe, po
         "atr_protection": "normal"
     })
 
+    # 新仓识别：不能只靠仓位数量变化。手动平仓后再按完全相同数量重开，
+    # 也必须建立全新的风险周期。若交易所没有真实 openTime，则由 watcher 的空仓清理兜底。
+    current_identity = _position_identity(position, side)
+    stored_identity = str(ps.get("position_identity") or "")
+    identity_changed = bool(current_identity and stored_identity and current_identity != stored_identity)
+    if identity_changed:
+        logger.warning(
+            f"[{symbol}] 🔄 检测到新的仓位身份，旧风险周期作废 | "
+            f"旧:{stored_identity} | 新:{current_identity}"
+        )
+        ps.update({
+            "base_contracts": contracts,
+            "contracts": contracts,
+            "t1_done": False,
+            "t2_done": False,
+            "t1_triggered": False,
+            "t2_triggered": False,
+            "t3_triggered": False,
+            "last_checked_time": 0,
+            "last_closed_candle_ts": 0,
+            "last_risk_check_time": 0,
+            "position_version": int(ps.get("position_version", 0)) + 1,
+            "risk_cycle_started_at": int(time.time()),
+            "add_immunity_until_ms": _current_candle_close_ms(timeframe),
+            "entry_time_ms": _position_open_time_ms(position) or int(time.time() * 1000),
+            "entry_time_source": "exchange" if _position_open_time_ms(position) else "first_seen",
+            "entry_classification": None,
+            "risk_entry_price": _f((position or {}).get("entryPrice"), 0.0),
+            "risk_entry_price_source": "position_average",
+            "processed_entry_version": 0,
+            "t3_waived": False,
+            "bottom_fish_sl": None,
+            "position_identity": current_identity,
+        })
+        return ps, True
+
     old = _f(ps.get("contracts"), contracts) or contracts
     changed = not math.isclose(old, contracts, rel_tol=1e-8, abs_tol=1e-10)
+    if current_identity and not stored_identity:
+        ps["position_identity"] = current_identity
+        changed = True
 
     if changed:
         ps["position_version"] = int(ps.get("position_version", 0)) + 1
@@ -927,6 +993,9 @@ def _reconcile_position_state(state, key, symbol, side, contracts, timeframe, po
                 "contracts": contracts,
                 "t1_done": False,
                 "t2_done": False,
+                "t1_triggered": False,
+                "t2_triggered": False,
+                "t3_triggered": False,
                 "risk_cycle_started_at": int(time.time()),
                 "add_immunity_until_ms": _current_candle_close_ms(timeframe),
                 "entry_time_ms": int(time.time() * 1000),
@@ -1249,9 +1318,9 @@ async def watch_symbol_position(exchange, symbol, side):
                         if closed_price > t3 + rec and pos_state.get("t3_waived"):
                             pos_state["t3_waived"] = False; logger.info(f"[{symbol}] 🚀 抄底成功！站上 T3，移动止损防护重装！")
 
-                        t1_hit = closed_price <= t1 - br and not pos_state.get("t1_done")
-                        t2_hit = closed_price <= t2 - br and not pos_state.get("t2_done")
-                        t3_hit = closed_price <= t3 - br and not pos_state.get("t3_waived")
+                        t1_hit = closed_price <= t1 - br and not pos_state.get("t1_triggered")
+                        t2_hit = closed_price <= t2 - br and not pos_state.get("t2_triggered")
+                        t3_hit = closed_price <= t3 - br and not pos_state.get("t3_waived") and not pos_state.get("t3_triggered")
 
                         if (closed_price <= t3) and (closed_price > t3 - br) and not pos_state.get("t3_waived"):
                             logger.success(f"[{symbol}] 💡 识破假跌破！未超出 {br:.2f} 缓冲区，判定为假破位，继续持有。")
@@ -1260,9 +1329,9 @@ async def watch_symbol_position(exchange, symbol, side):
                         if closed_price < t3 - rec and pos_state.get("t3_waived"):
                             pos_state["t3_waived"] = False
 
-                        t1_hit = closed_price >= t1 + br and not pos_state.get("t1_done")
-                        t2_hit = closed_price >= t2 + br and not pos_state.get("t2_done")
-                        t3_hit = closed_price >= t3 + br and not pos_state.get("t3_waived")
+                        t1_hit = closed_price >= t1 + br and not pos_state.get("t1_triggered")
+                        t2_hit = closed_price >= t2 + br and not pos_state.get("t2_triggered")
+                        t3_hit = closed_price >= t3 + br and not pos_state.get("t3_waived") and not pos_state.get("t3_triggered")
 
                         if (closed_price >= t3) and (closed_price < t3 + br) and not pos_state.get("t3_waived"):
                             logger.success(f"[{symbol}] 💡 识破假突破！未超出 {br:.2f} 缓冲区，判定为假突破，继续持有。")
@@ -1287,15 +1356,32 @@ async def watch_symbol_position(exchange, symbol, side):
 
                         # T3 趋势破位 -> 紧急市价全平 (Taker)
                         if t3_hit:
-                            msg = f"[{symbol}] 🚨 T3 {n3}MA 真破位，右侧趋势失效，全平仓位。"
+                            # 先落盘“一次性触发锁”，再推送/执行。执行异常也绝不重复触发同一根K线。
+                            pos_state["t3_triggered"] = True
+                            state[key] = pos_state; _save_state(state)
+                            msg = (
+                                f"[{symbol}] 🚨 T3 {n3}MA 真破位，右侧趋势失效，全平仓位。\n"
+                                f"方向:{side} | 当前价:{current_price:.4f} | 最近收盘:{closed_price:.4f} | "
+                                f"MA{n3}:{t3:.4f} | T3触发线:{(t3-br if side=='long' else t3+br):.4f} | "
+                                f"ATR:{atr:.4f} | 缓冲:{br:.4f} | K线:{closed_ts}"
+                            )
                             logger.error(msg); send_alert(full_config, "风控警告: T3 趋势失效", msg, symbol=symbol)
                             success, _ = await _full_exit_with_revalidation(exchange, symbol, side, fresh, "T3 全平", conf, pos_state)
                             if success: state.pop(key, None); _save_state(state); return
+                            logger.error(f"[{symbol}] ❗T3 已触发且已锁定，但全平未完成；为避免重复下单，不再重复触发同一风险周期。")
 
                         # T2 破位 30% 减仓 -> 限价挂单 (Maker)
                         elif t2_hit:
                             qty = min(current_contracts, (_f(pos_state.get("base_contracts"), current_contracts)) * float(conf.get("tier2_ratio", 0.30)))
-                            msg = f"[{symbol}] 📉 T2 ({n2}) MA 真破位，执行 30% 限价减仓: {qty}。"
+                            # 先锁定，再通知，再执行，彻底杜绝同一风险周期重复推送。
+                            pos_state["t2_triggered"] = True
+                            state[key] = pos_state; _save_state(state)
+                            msg = (
+                                f"[{symbol}] 📉 T2 ({n2}) MA 真破位，执行 30% 限价减仓: {qty}。\n"
+                                f"方向:{side} | 当前价:{current_price:.4f} | 最近收盘:{closed_price:.4f} | "
+                                f"MA{n2}:{t2:.4f} | T2触发线:{(t2-br if side=='long' else t2+br):.4f} | "
+                                f"ATR:{atr:.4f} | 缓冲:{br:.4f} | K线:{closed_ts}"
+                            )
                             logger.warning(msg); send_alert(full_config, "风控提示: T2 减仓", msg, symbol=symbol)
                             _, after = await _limit_reduce_with_maker_retry(
                                 exchange, symbol, side, fresh, qty, "T2 限价减仓", conf,
@@ -1307,7 +1393,15 @@ async def watch_symbol_position(exchange, symbol, side):
                         # T1 破位 20% 减仓 -> 限价挂单 (Maker)
                         elif t1_hit:
                             qty = min(current_contracts, (_f(pos_state.get("base_contracts"), current_contracts)) * float(conf.get("tier1_ratio", 0.20)))
-                            msg = f"[{symbol}] 📉 T1 ({n1}) MA 真破位，执行 20% 限价减仓: {qty}。"
+                            # 关键修复：在发送通知和下单之前先持久化一次性动作锁。
+                            pos_state["t1_triggered"] = True
+                            state[key] = pos_state; _save_state(state)
+                            msg = (
+                                f"[{symbol}] 📉 T1 ({n1}) MA 真破位，执行 20% 限价减仓: {qty}。\n"
+                                f"方向:{side} | 当前价:{current_price:.4f} | 最近收盘:{closed_price:.4f} | "
+                                f"MA{n1}:{t1:.4f} | T1触发线:{(t1-br if side=='long' else t1+br):.4f} | "
+                                f"ATR:{atr:.4f} | 缓冲:{br:.4f} | K线:{closed_ts}"
+                            )
                             logger.warning(msg); send_alert(full_config, "风控提示: T1 减仓", msg, symbol=symbol)
                             _, after = await _limit_reduce_with_maker_retry(
                                 exchange, symbol, side, fresh, qty, "T1 限价减仓", conf,
