@@ -362,6 +362,5 @@
     "tp_limit_max_retries": 0,
     "tp_limit_timeout_sec": 10.0,
     "tp_limit_check_interval_sec": 1.0
-
   }
 }

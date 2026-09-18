@@ -60,8 +60,8 @@ DEFAULT_CONFIG = {
         "tp3_r_multiple": 3.0,
         "tp1_ratio": 0.20,
         "tp2_ratio": 0.30,
-        # TP3：不设置/为 null = TP3 全平；设置 0~1 = TP3 触发后保留该比例仓位继续吃趋势。
-        "tp3": None,
+        # 躺平：不设置/为 null = 躺平 全平；设置 0~1 = 躺平 触发后保留该比例仓位继续吃趋势。
+        "tp3_ratio": None,
         # 止盈只用限价挂单循环，不用市价保底；0 = 持续循环直到成交/仓位消失。
         "tp_maker_only": True,
         "tp_limit_max_retries": 0,
@@ -940,7 +940,7 @@ LAST_RISK_STATE_LOG_TIME = {}
 
 
 def _tp3_remaining_ratio(conf):
-    """TP3 保留仓位比例：未设置/None => 0（全平）；设置 0~1 => 保留该比例。"""
+    """躺平 保留仓位比例：未设置/None => 0（全平）；设置 0~1 => 保留该比例。"""
     raw = conf.get("tp3_ratio", None)
     if raw is None or raw == "":
         return 0.0
@@ -959,7 +959,7 @@ def _tp3_action_text(conf):
     return "全平" if ratio <= 0 else f"保留{ratio:.0%}"
 
 def _initialize_take_profit_levels(pos_state, side, entry_price, strategy_stop, conf):
-    """为当前风险周期固定初始 R，并计算 TP1/TP2/TP3。
+    """为当前风险周期固定初始 R，并计算 TP1/TP2/躺平。
 
     TP 使用风险周期开始时的初始风险，不跟随动态止损移动，避免行情上涨后 TP
     被不断推远/拉近。若当前策略止损不在仓位亏损侧，则暂不初始化。
@@ -986,7 +986,7 @@ def _initialize_take_profit_levels(pos_state, side, entry_price, strategy_stop, 
     tp2_r = float(conf.get("tp2_r_multiple", 2.0))
     tp3_r = float(conf.get("tp3_r_multiple", 3.0))
     if not (0 < tp1_r < tp2_r < tp3_r):
-        raise ValueError("TP 的 R 倍数必须满足 0 < TP1 < TP2 < TP3")
+        raise ValueError("TP 的 R 倍数必须满足 0 < TP1 < TP2 < 躺平")
 
     if side == "long":
         tp1 = entry_price + risk * tp1_r
@@ -1018,7 +1018,7 @@ def _take_profit_protection_stop(pos_state, side, conf):
 
     TP1 后：止损抬到开仓价上方/下方的小缓冲，目标是覆盖手续费和轻微滑点。
     TP2 后：止损抬到 TP1 上方/下方，锁住已实现利润。
-    TP3 若保留仓位：止损抬到 TP2 上方/下方，继续让剩余仓位吃趋势。
+    躺平 若保留仓位：止损抬到 TP2 上方/下方，继续让剩余仓位吃趋势。
     """
     entry = _f(pos_state.get("tp_entry_price"), 0.0)
     tp1 = _f(pos_state.get("tp1_price"), 0.0)
@@ -1028,7 +1028,7 @@ def _take_profit_protection_stop(pos_state, side, conf):
     lock_buf = max(0.0, float(conf.get("tp_profit_lock_buffer_pct", 0.0010)))
     if pos_state.get("tp3_triggered"):
         tp2 = _f(pos_state.get("tp2_price"), 0.0)
-        tp3_cfg = conf.get("tp3", None)
+        tp3_cfg = conf.get("tp3_ratio", None)
         if tp3_cfg is not None and 0.0 < float(tp3_cfg) < 1.0 and tp2 > 0:
             return ((tp2 * (1.0 + lock_buf)) if side == "long" else (tp2 * (1.0 - lock_buf))), 3
     if pos_state.get("tp2_triggered") and tp1 > 0:
@@ -1039,27 +1039,53 @@ def _take_profit_protection_stop(pos_state, side, conf):
 
 
 def _take_profit_hit(pos_state, side, current_price):
-    """返回当前应该执行的最高级别止盈：3/2/1/0。"""
+    """返回当前应该执行的最高级别止盈：3/2/1/0。
+
+    关键安全校验：TP 价格必须与当前仓位方向、TP 入口价格形成正确的单调关系。
+    如果发现 躺平 跑到了开仓价的错误一侧（例如多单 entry=8.x，但 躺平=7.x），
+    说明状态是旧周期/脏状态，绝对不能触发平仓。
+    """
     if not pos_state.get("tp_risk_distance"):
         return 0
     if pos_state.get("tp3_triggered"):
         return 0
-    tp3 = _f(pos_state.get("tp3_price"), 0)
-    tp2 = _f(pos_state.get("tp2_price"), 0)
-    tp1 = _f(pos_state.get("tp1_price"), 0)
+
+    entry = _f(pos_state.get("tp_entry_price"), 0.0)
+    tp1 = _f(pos_state.get("tp1_price"), 0.0)
+    tp2 = _f(pos_state.get("tp2_price"), 0.0)
+    tp3 = _f(pos_state.get("tp3_price"), 0.0)
+    price = _f(current_price, 0.0)
+
+    # 严格验证 TP 阶梯，任何异常都只记录/跳过，不允许误平仓。
+    if min(entry, tp1, tp2, tp3, price) <= 0:
+        return 0
     if side == "long":
-        if tp3 > 0 and current_price >= tp3:
+        valid = entry < tp1 < tp2 < tp3
+        if not valid:
+            logger.error(
+                f"[{pos_state.get('risk_cycle_id','?')}] 🚫 TP状态异常，拒绝执行止盈！ "
+                f"方向:多 | Entry:{entry:.8f} | TP1:{tp1:.8f} | TP2:{tp2:.8f} | 躺平:{tp3:.8f} | 当前:{price:.8f}"
+            )
+            return 0
+        if price >= tp3:
             return 3
-        if tp2 > 0 and current_price >= tp2 and not pos_state.get("tp2_triggered"):
+        if price >= tp2 and not pos_state.get("tp2_triggered"):
             return 2
-        if tp1 > 0 and current_price >= tp1 and not pos_state.get("tp1_triggered"):
+        if price >= tp1 and not pos_state.get("tp1_triggered"):
             return 1
     else:
-        if tp3 > 0 and current_price <= tp3:
+        valid = entry > tp1 > tp2 > tp3
+        if not valid:
+            logger.error(
+                f"[{pos_state.get('risk_cycle_id','?')}] 🚫 TP状态异常，拒绝执行止盈！ "
+                f"方向:空 | Entry:{entry:.8f} | TP1:{tp1:.8f} | TP2:{tp2:.8f} | 躺平:{tp3:.8f} | 当前:{price:.8f}"
+            )
+            return 0
+        if price <= tp3:
             return 3
-        if tp2 > 0 and current_price <= tp2 and not pos_state.get("tp2_triggered"):
+        if price <= tp2 and not pos_state.get("tp2_triggered"):
             return 2
-        if tp1 > 0 and current_price <= tp1 and not pos_state.get("tp1_triggered"):
+        if price <= tp1 and not pos_state.get("tp1_triggered"):
             return 1
     return 0
 
@@ -1412,6 +1438,34 @@ async def watch_symbol_position(exchange, symbol, side):
                 snap = await _market_snapshot(exchange, symbol, conf, priority="NORMAL")
                 current_price = snap["mark"]
 
+                # TP 安全校验：如果持仓入口价格已变化，或旧状态中的 TP 阶梯与当前方向不一致，
+                # 必须先清空旧 TP，重新按当前风险周期初始化；绝不允许旧 TP 直接触发平仓。
+                tp_entry_state = _f(pos_state.get("tp_entry_price"), 0.0)
+                tp1_state = _f(pos_state.get("tp1_price"), 0.0)
+                tp2_state = _f(pos_state.get("tp2_price"), 0.0)
+                tp3_state = _f(pos_state.get("tp3_price"), 0.0)
+                tp_state_valid = False
+                if tp_entry_state > 0 and tp1_state > 0 and tp2_state > 0 and tp3_state > 0 and entry_price > 0:
+                    same_entry = abs(tp_entry_state - entry_price) / max(entry_price, 1e-12) <= 0.001
+                    if side == "long":
+                        tp_state_valid = same_entry and (entry_price < tp1_state < tp2_state < tp3_state)
+                    else:
+                        tp_state_valid = same_entry and (entry_price > tp1_state > tp2_state > tp3_state)
+                if pos_state.get("tp_entry_price") and not tp_state_valid:
+                    logger.warning(
+                        f"[{symbol}] 🧹 检测到旧/异常TP状态，已清除并禁止本轮误触发 | "
+                        f"方向:{side} | 当前开仓价:{entry_price:.8f} | "
+                        f"旧TP1:{tp1_state:.8f} TP2:{tp2_state:.8f} 躺平:{tp3_state:.8f}"
+                    )
+                    pos_state.update({
+                        "tp_entry_price": None, "tp_initial_stop": None, "tp_risk_distance": None,
+                        "tp1_price": None, "tp2_price": None, "tp3_price": None,
+                        "tp1_triggered": False, "tp2_triggered": False, "tp3_triggered": False,
+                        "tp_protected_stop": None, "tp_protection_stage": 0,
+                    })
+                    state[key] = pos_state
+                    _save_state(state)
+
                 # 先计算/初始化本风险周期的固定 TP，再维护交易所 STOP，
                 # 这样 TP1/TP2 完成后的利润保护 STOP 能在同一轮进入交易所。
                 if bool(conf.get("take_profit_enabled", True)):
@@ -1432,7 +1486,7 @@ async def watch_symbol_position(exchange, symbol, side):
                     logger.error(f"[{symbol}] 交易所兜底止损异常，不影响内部风控继续运行: {e}")
 
                 # 每一次巡检都重新读取交易所当前 STOP，确保日志展示的是“实际挂单价格”，
-                # 而不是仅依赖 last_stop_price。TP1/TP2/TP3 也在同一条日志完整输出。
+                # 而不是仅依赖 last_stop_price。TP1/TP2/躺平 也在同一条日志完整输出。
                 actual_stop = None
                 strategy_stop_display = None
                 try:
@@ -1465,7 +1519,7 @@ async def watch_symbol_position(exchange, symbol, side):
                     f"策略止损:{_f(strategy_stop_display, pos_state.get('last_stop_price') or 0):.8f} | "
                     f"TP1:{_f(pos_state.get('tp1_price'), 0):.8f} → {float(conf.get('tp1_ratio', 0.20)):.0%} [{'已完成' if pos_state.get('tp1_triggered') else '待触发'}] | "
                     f"TP2:{_f(pos_state.get('tp2_price'), 0):.8f} → {float(conf.get('tp2_ratio', 0.30)):.0%} [{'已完成' if pos_state.get('tp2_triggered') else '待触发'}] | "
-                    f"TP3:{_f(pos_state.get('tp3_price'), 0):.8f} → {tp3_action} [{'已完成' if pos_state.get('tp3_triggered') else '待触发'}] | "
+                    f"躺平:{_f(pos_state.get('tp3_price'), 0):.8f} → {tp3_action} [{'已完成' if pos_state.get('tp3_triggered') else '待触发'}] | "
                     f"保护阶段:TP{tp_stage} | TP保护STOP:{_f(pos_state.get('tp_protected_stop'), 0):.8f} | "
                     f"R:{_f(pos_state.get('tp_risk_distance'), 0):.8f} | 周期:{pos_state.get('risk_cycle_id')}"
                 )
@@ -1498,27 +1552,27 @@ async def watch_symbol_position(exchange, symbol, side):
                                 state[key] = pos_state; _save_state(state)
                                 if tp3_keep <= 0:
                                     msg = (
-                                        f"[{symbol}] 🎯 TP3达到{conf.get('tp3_r_multiple',3.0):g}R，执行全部止盈！ "
+                                        f"[{symbol}] 🎯 躺平达到{conf.get('tp3_r_multiple',3.0):g}R，执行全部止盈！ "
                                         f"周期:{pos_state.get('risk_cycle_id')} | 当前:{current_price:.8f} | "
-                                        f"TP3:{_f(pos_state.get('tp3_price')):.8f} | 模式:Maker挂单循环全平"
+                                        f"躺平:{_f(pos_state.get('tp3_price')):.8f} | 模式:Maker挂单循环全平"
                                     )
                                     logger.success(msg)
-                                    send_alert(full_config, "止盈提示: TP3 全平", msg, symbol=symbol)
+                                    send_alert(full_config, "止盈提示: 躺平 全平", msg, symbol=symbol)
                                     qty = current_contracts
                                 else:
                                     reduce_ratio = max(0.0, 1.0 - tp3_keep)
                                     qty = min(current_contracts, _f(pos_state.get("base_contracts"), current_contracts) * reduce_ratio)
                                     msg = (
-                                        f"[{symbol}] 🎯 TP3达到{conf.get('tp3_r_multiple',3.0):g}R，执行TP3止盈，保留{tp3_keep:.0%}仓位继续吃利润！ "
-                                        f"周期:{pos_state.get('risk_cycle_id')} | 当前:{current_price:.8f} | TP3:{_f(pos_state.get('tp3_price')):.8f} | "
+                                        f"[{symbol}] 🎯 躺平达到{conf.get('tp3_r_multiple',3.0):g}R，执行躺平止盈，保留{tp3_keep:.0%}仓位继续吃利润！ "
+                                        f"周期:{pos_state.get('risk_cycle_id')} | 当前:{current_price:.8f} | 躺平:{_f(pos_state.get('tp3_price')):.8f} | "
                                         f"本次减仓:{qty:.8f} | 模式:Maker挂单循环"
                                     )
                                     logger.success(msg)
-                                    send_alert(full_config, "止盈提示: TP3 分批止盈", msg, symbol=symbol)
+                                    send_alert(full_config, "止盈提示: 躺平 分批止盈", msg, symbol=symbol)
                                 if qty > 0:
                                     _, after = await _limit_reduce_with_maker_retry(
                                         exchange, symbol, side, fresh, qty,
-                                        "TP3止盈", conf, int(pos_state.get("position_version", 0)), pos_state,
+                                        "躺平止盈", conf, int(pos_state.get("position_version", 0)), pos_state,
                                         max_retries=int(conf.get("tp_limit_max_retries", 0)),
                                         check_interval_sec=float(conf.get("tp_limit_check_interval_sec", 1.0)),
                                         timeout_sec=float(conf.get("tp_limit_timeout_sec", 10.0)),
@@ -1530,7 +1584,7 @@ async def watch_symbol_position(exchange, symbol, side):
                                     state[key] = pos_state; _save_state(state)
                                     if after <= 1e-10:
                                         state.pop(key, None); _save_state(state); return
-                                    logger.success(f"[{symbol}] 🔐 TP3完成：剩余{after}仓位继续由移动STOP保护利润")
+                                    logger.success(f"[{symbol}] 🔐 躺平完成：剩余{after}仓位继续由移动STOP保护利润")
                             elif tp_level == 2 and not pos_state.get("tp2_triggered"):
                                 pos_state["tp2_triggered"] = True
                                 state[key] = pos_state; _save_state(state)
@@ -1674,7 +1728,7 @@ async def watch_symbol_position(exchange, symbol, side):
                         f"T2减仓位:{t2_low if side=='long' else t2_high:.4f} (30%) | "
                         f"T3全平结构位:{t3_low if side=='long' else t3_high:.4f} | "
                         f"当前策略保护止损:{strategy_stop:.4f} | TP保护阶段:{int(pos_state.get('tp_protection_stage',0))} | TP保护止损:{_f(pos_state.get('tp_protected_stop'),0):.4f} | "
-                        f"TP1:{_f(pos_state.get('tp1_price'),0):.4f} TP2:{_f(pos_state.get('tp2_price'),0):.4f} TP3:{_f(pos_state.get('tp3_price'),0):.4f}({_tp3_action_text(conf)}) | "
+                        f"TP1:{_f(pos_state.get('tp1_price'),0):.4f} TP2:{_f(pos_state.get('tp2_price'),0):.4f} 躺平:{_f(pos_state.get('tp3_price'),0):.4f}({_tp3_action_text(conf)}) | "
                         f"周期:{pos_state.get('risk_cycle_id')}"
                     )
 
