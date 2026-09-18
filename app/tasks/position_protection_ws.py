@@ -948,9 +948,24 @@ async def _ensure_disaster_stop(exchange, symbol, side, pos, current_price, conf
             stop, distance = _calculate_disaster_stop(exchange, symbol, side, current_price, atr, conf)
         stops = await _find_stop_orders(exchange, symbol, side, pos, current_price, conf, force=True)
 
+        existing_trigger = _algo_trigger(stops[0]) if stops else None
+        if strategy:
+            logger.info(
+                f"[{symbol}] 🛡️ 止盈/止损位 | 方向:{side} | 当前价:{current_price:.8f} | "
+                f"策略止损:{stop:.8f} | 距离:{distance:.2%} | "
+                f"EMA26:{strategy['ema_fast']:.8f} | EMA83:{strategy['ema_slow']:.8f} | "
+                f"ATR14:{strategy['atr']:.8f} | 结构止损:{strategy['long_structure'] if side == 'long' else strategy['short_structure']:.8f} | "
+                f"趋势:{strategy['trend']} | 交易所STOP:{existing_trigger if existing_trigger is not None else '不存在'}"
+            )
+        else:
+            logger.info(
+                f"[{symbol}] 🛡️ 止损位 | 方向:{side} | 当前价:{current_price:.8f} | "
+                f"ATR兜底止损:{stop:.8f} | 距离:{distance:.2%} | "
+                f"交易所STOP:{existing_trigger if existing_trigger is not None else '不存在'}"
+            )
+
         needs_update = False
         if stops:
-            existing_trigger = _algo_trigger(stops[0])
             if existing_trigger:
                 if side == "long" and stop < existing_trigger:
                     stop = existing_trigger
@@ -968,6 +983,10 @@ async def _ensure_disaster_stop(exchange, symbol, side, pos, current_price, conf
             await _cancel_stop_orders(exchange, symbol, stops, conf)
 
         await _create_full_close_stop(exchange, symbol, pos, side, stop, conf)
+        logger.success(
+            f"[{symbol}] 🔒 交易所STOP止损已设置 | 方向:{side} | "
+            f"触发价:{stop:.8f} | 当前价:{current_price:.8f} | 距离:{distance:.2%} | 类型:STOP_MARKET"
+        )
         LAST_STOP_ORDER_TIME[symbol] = time.time()
 
     except Exception as e:
@@ -1300,10 +1319,12 @@ async def watch_symbol_position(exchange, symbol, side):
                 # 触发锁必须先落盘，再发通知/下单，彻底杜绝同一根K线重复20%推送。
                 if closed_ts > int(pos_state.get("last_checked_time", 0)):
                     logger.info(
-                        f"[{symbol}] 📊 V3收盘风控 | 方向:{side} | 收盘:{closed_price:.4f} | 当前:{current_price:.4f} | "
+                        f"[{symbol}] 📊 V3止盈/止损监控 | 方向:{side} | 收盘:{closed_price:.4f} | 当前:{current_price:.4f} | "
                         f"EMA26:{ema_fast:.4f} EMA83:{ema_slow:.4f} 趋势:{trend} ATR14:{atr:.4f} | "
-                        f"T1结构:{t1_low if side=='long' else t1_high:.4f} T2结构:{t2_low if side=='long' else t2_high:.4f} "
-                        f"T3结构:{t3_low if side=='long' else t3_high:.4f} | 周期:{pos_state.get('risk_cycle_id')}"
+                        f"T1减仓位:{t1_low if side=='long' else t1_high:.4f} (20%) | "
+                        f"T2减仓位:{t2_low if side=='long' else t2_high:.4f} (30%) | "
+                        f"T3全平结构位:{t3_low if side=='long' else t3_high:.4f} | "
+                        f"当前策略保护止损:{strategy_stop:.4f} | 周期:{pos_state.get('risk_cycle_id')}"
                     )
 
                     pos_state["last_checked_time"] = closed_ts
