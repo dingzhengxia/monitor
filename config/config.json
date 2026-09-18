@@ -354,9 +354,14 @@
     "tp3_r_multiple": 3.0,
     "tp1_ratio": 0.2,
     "tp2_ratio": 0.3,
-    "tp3_close_all": true,
+    "tp3_ratio": null,
     "tp_breakeven_buffer_pct": 0.002,
     "tp_profit_lock_buffer_pct": 0.001,
-    "tp_use_closed_candle": false
+    "tp_use_closed_candle": false,
+    "tp_maker_only": true,
+    "tp_limit_max_retries": 0,
+    "tp_limit_timeout_sec": 10.0,
+    "tp_limit_check_interval_sec": 1.0
+
   }
 }
