@@ -1,0 +1,348 @@
+{
+  "app_settings": {
+    "exchange": "binance",                // 交易平台，当前对接币安 (Binance)
+    "default_market_type": "swap",        // 默认交易市场类型，swap 代表永续合约 (U本位)
+    "check_interval_minutes": 5,          // 策略/行情检查间隔，每 5 分钟轮询一次
+    "log_level": "DEBUG",                 // 日志输出级别。DEBUG 会输出最详细的后台信息
+    "max_workers": 2                      // API 异步并发请求数，控制为 2 避免频繁触发交易所限流
+  },
+  "market_settings": {
+    "timeframes": [                       // 系统监控和策略计算参考的 K线时间周期
+      "1h",
+      "4h",
+      "1d"
+    ],
+    "static_symbols": [                   // 静态监控白名单。无论动态条件如何都会死盯的币种
+      "BTC",
+      "ETH",
+      "BNB"
+    ],
+    "dynamic_scan": {                     // 全市场动态扫描设置（自动挖掘有潜力的山寨币交易对）
+      "enabled": false,                   // 当前关闭。若开启，机器人会自动去市场找币
+      "top_n_for_signals": 100,           // 开启后，仅在成交量排名前 100 的活跃币种中寻找信号
+      "primary_quote_currency": "USDT",   // 主计价货币，只做 USDT 交易对
+      "cross_market_filter": {            // 流动性过滤机制（排除极小众、深度差的山寨币）
+        "enabled": true,
+        "must_exist_in": [
+          "USDC"                          // 候选币种必须同时拥有 USDC 交易对，证明有一定的流动性认可度
+        ]
+      },
+      "exclude_symbols": [                // 扫描黑名单：排除各大稳定币和黄金等法币锚定资产，防止程序误判
+        "USDT", "USD1", "USDS", "USDC", "DAI", "TUSD", "BUSD", "FDUSD", "PAXG", "USDP", "GUSD", "USDD", "EUROC"
+      ]
+    }
+  },
+  "strategy_params": {                    // 交易策略与技术指标的具体参数
+    "trend_ema": {
+      "long_period": 120                  // 主趋势 EMA 周期 (均线)，用于判断大环境牛熊
+    },
+    "dynamic_volume_multipliers": {       // 动态成交量过滤（针对不同市值的币，要求不同的“爆量”门槛）
+      "enabled": true,
+      "method": "linear_stepped",         // 线性阶梯算法
+      "min_multiplier": 1.5,              // 最低要求该K线成交量是平时均量的 1.5 倍
+      "max_multiplier": 5.0,              // 小币种最高要求爆出 5 倍的均量才算有效突破
+      "apply_to_rank_n": 100,             // 算法应用于成交量前 100 的币种
+      "rank_step_size": 3                 // 排名阶梯步长
+    },
+    "dynamic_atr_multipliers": {          // 动态 ATR (波动率) 过滤配置，当前关闭
+      "enabled": false,
+      "method": "linear_stepped",
+      "min_multiplier": 1.5,
+      "max_multiplier": 5.0,
+      "apply_to_rank_n": 100,
+      "rank_step_size": 3
+    },
+    "trend_ema_short": {                  // 短期均线组参数（类似 MACD 底层）
+      "fast": 12,
+      "medium": 26,
+      "long": 60
+    },
+    "trend_ema_long": {                   // 长期均线组参数
+      "fast": 26,
+      "medium": 50,
+      "long": 120
+    },
+    "ma_breakout": {                      // 均线突破策略
+      "enabled": true,                    // 当前开启
+      "ma_type": "sma",                   // 采用 SMA (简单移动平均线)
+      "ma_periods": [ 7, 25, 99 ],        // 关注突破的 3 根均线周期
+      "volume_confirm": true,             // 突破时必须有成交量放大确认
+      "exempt_static_on_volume": false,   // 白名单币种不能豁免成交量检查
+      "volume_multiplier": 1.5,           // 突破量必须达到均量的 1.5 倍
+      "exclude_timeframes": []            // 不排除任何时间周期
+    },
+    "ema_cross": {                        // EMA 交叉策略 (如金叉/死叉)
+      "enabled": true,
+      "period": 120,
+      "volume_confirm": true,
+      "exempt_static_on_volume": true,    // 对于 BTC 等白名单大币种，交叉时不强制要求爆量
+      "volume_multiplier": 2,
+      "atr_period": 14,
+      "atr_multiplier": 1,
+      "exclude_timeframes": []
+    },
+    "kdj_cross": {                        // KDJ 指标交叉策略，当前关闭
+      "enabled": false,
+      "fast_k": 9, "slow_k": 3, "slow_d": 3,
+      "volume_confirm": true,
+      "exempt_static_on_volume": false,
+      "volume_multiplier": 2,
+      "exclude_timeframes": [ "1d" ]
+    },
+    "volatility_breakout": {              // 波动率突破策略，当前关闭
+      "enabled": false,
+      "atr_period": 14,
+      "atr_multiplier": 2.5,
+      "volume_confirm": true,
+      "exempt_static_on_volume": false,
+      "volume_multiplier": 2.0,
+      "exclude_timeframes": []
+    },
+    "level_breakout": {                   // 关键水平位 (支撑/阻力) 突破策略，当前开启
+      "enabled": true,
+      "volume_confirm": false,            // 突破关键位时不强求立刻爆量 (防骗线或提前介入)
+      "exempt_static_on_volume": true,
+      "volume_multiplier": 1.5,
+      "level_detection": {                // 支撑阻力位侦测算法
+        "method": "advanced",
+        "swing_pivots": {                 // 基于波段高低点来寻找水平位
+          "enabled": true,
+          "left_bars": 7,                 // 确认一个高点需要左侧 7 根 K线比它低
+          "right_bars": 7                 // 右侧 7 根 K线比它低
+        },
+        "rolling_pivots": {               // 滚动中枢侦测开启
+          "enabled": true
+        }
+      },
+      "breakout_period": 120,             // 突破判定参考过去 120 根 K线
+      "volume_ma_period": 20,             // 算量时取 20 根 K线的移动平均量
+      "atr_period": 14,
+      "atr_multiplier_breakout": 0.5,     // 突破幅度需大于 0.5 倍 ATR 避免假突破
+      "exclude_timeframes": [],
+      "overrides_by_timeframe": {         // 针对特定周期 (如 1天线) 的单独覆盖设置
+        "1d": {
+          "level_detection": {
+            "method": "advanced",
+            "swing_pivots": {
+              "enabled": true,
+              "left_bars": 10,            // 日线上，波段极值的确认需前后各 10 天
+              "right_bars": 10
+            }
+          }
+        }
+      }
+    },
+    "rsi_divergence": {                   // RSI 背离策略 (顶底背离)，当前关闭
+      "enabled": false,
+      "rsi_period": 14,
+      "lookback_period": 60,
+      "exclude_timeframes": [ "1h" ]
+    },
+    "ob_luxalgo": {                       // 聪明钱/机构订单块策略 (Luxalgo算法)，当前开启
+      "enabled": true,
+      "swing_length": 5,                  // 找订单块的极值波段长度
+      "alert_on_rejection": true,         // 在订单块受阻拒绝时报警
+      "alert_on_breakout": true,          // 彻底突破订单块时报警
+      "exclude_timeframes": []
+    },
+    "ob_fluxcharts": {                    // 聪明钱/机构订单块策略 (Fluxcharts算法)，当前开启
+      "enabled": true,
+      "swing_length": 10,
+      "atr_multiplier": 3.5,
+      "alert_on_rejection": true,
+      "alert_on_breakout": true,
+      "exclude_timeframes": []
+    },
+    "high_funding_rate": {                // 极端资金费率扫描，当前开启 (寻找多空极度不平衡的标的)
+      "enabled": true,
+      "threshold": 0.01,                  // 资金费率超过 1% 时触发
+      "cooldown_mult": 2,
+      "scan_top_n": 500,                  // 扫描费率前 500 的币种
+      "exclude_timeframes": [ "15m", "1h", "1d" ]
+    },
+    "trend_channel_breakout": [           // 趋势通道突破策略 (支持多套参数)
+      {
+        "name": "短期趋势通道 (1h/4h)",
+        "enabled": true,
+        "min_trend_length": 10,           // 通道至少包含 10 根 K 线
+        "std_dev_multiplier": 1.2,        // 通道宽度为 1.2 倍标准差
+        "breakout_confirmation_atr": 0.1, // 突破需外延 0.1 ATR 确认
+        "volume_confirm": false,
+        "exempt_static_on_volume": true,
+        "volume_multiplier": 1.5,
+        "exclude_timeframes": [ "1d" ],   // 排除 1d 周期
+        "overrides_by_timeframe": {
+          "1h": { "lookback_period": 120 },
+          "4h": { "lookback_period": 80 }
+        }
+      },
+      {
+        "name": "长期趋势通道 (All TFs)",
+        "enabled": true,
+        "min_trend_length": 20,
+        "std_dev_multiplier": 1.8,        // 长期通道更宽 (1.8 倍标准差)
+        "breakout_confirmation_atr": 0.2,
+        "volume_confirm": false,
+        "exempt_static_on_volume": true,
+        "volume_multiplier": 2.0,
+        "exclude_timeframes": [],
+        "overrides_by_timeframe": {
+          "1h": { "lookback_period": 300 },
+          "4h": { "lookback_period": 200 },
+          "1d": { "lookback_period": 150 }
+        }
+      }
+    ],
+    "consecutive_candles": {              // 连阳/连阴策略 (例如连涨 9 根 K 线可能存在衰竭或加速)
+      "enabled": true,
+      "dynamic_count": {
+        "enabled": true,
+        "method": "linear_stepped",
+        "min_count": 6,
+        "max_count": 12,
+        "apply_to_rank_n": 100,
+        "rank_step_size": 10,
+        "default_count": 9                // 默认抓取 9 连阳/阴
+      },
+      "min_consecutive_candles": 4,       // 无论如何至少要 4 连才纳入计算
+      "volume_confirm": false,
+      "exempt_static_on_volume": true,
+      "volume_multiplier": 1.5,
+      "exclude_timeframes": [ "15m" ]
+    }
+  },
+  "periodic_reports": [                   // 自动周期报告推送设置
+    {
+      "enabled": false,                   // 当前关闭 4 小时热点报告
+      "report_name": "4小时热点报告",
+      "run_interval": "4h",               // 每 4 小时运行一次
+      "top_n_by_volume": 300,
+      "top_n_gainers": 10,                // 筛选涨幅前 10
+      "min_consecutive_candles": 5,
+      "volume_ma_period": 20,
+      "top_n_volume_ratio": 10,
+      "market_sentiment": {
+        "enabled": true,
+        "rsi_period": 14,
+        "rsi_overbought": 70,             // RSI 大于 70 视为超买区
+        "rsi_oversold": 30                // RSI 小于 30 视为超卖区
+      }
+    },
+    {
+      "enabled": false,                   // 当前关闭每日宏观复盘
+      "report_name": "每日宏观复盘",
+      "run_interval": "1d",
+      "top_n_by_volume": 300,
+      "top_n_gainers": 10,
+      "min_consecutive_candles": 3,
+      "volume_ma_period": 20,
+      "top_n_volume_ratio": 10,
+      "market_sentiment": {
+        "enabled": true,
+        "rsi_period": 14,
+        "rsi_overbought": 75,
+        "rsi_oversold": 25
+      }
+    }
+  ],
+  "notification_settings": {              // 消息通知设置
+    "dingtalk": {                         // 钉钉报警推送
+      "enabled": true                     // 当前开启（风控操作、止盈止损会发钉钉）
+    },
+    "desktop": {                          // 桌面弹窗报警
+      "enabled": false,                   // 当前关闭
+      "timeout_seconds": 30
+    }
+  },
+
+  // ————————————————————————————————————————————————————
+  // 下列模块极其重要：直接决定你的本金安全与利润留存
+  // ————————————————————————————————————————————————————
+  "position_protection": {
+    "enabled": true,                      // [总开关] 仓位风控保护已开启
+    "timeframe": "8h",                    // 核心结构防线的基准周期：8小时K线。改动会大幅改变持仓忍耐度！
+
+    // 阶梯止损参数 (结合代码里的 V3 EMA结构破位逻辑)
+    "n1_bars": 7,                         // T1 级别：看过去 7 根 K线 (约两天) 的极值作为第一道防线
+    "n2_bars": 26,                        // T2 级别：看过去 26 根 K线 (约八天) 的极值作为第二道防线
+    "n3_bars": 83,                        // T3 级别：看过去 83 根 K线 (近一个月) 的极值作为底线
+    "tier1_ratio": 0.2,                   // T1 触发时，止损平仓 20%
+    "tier2_ratio": 0.3,                   // T2 触发时，止损平仓 30%
+
+    "ma_atr_period": 14,                  // 计算止损缓冲带时，ATR的周期取 14
+    "ma_atr_buffer_multiplier": 0.3,      // 均线止损的 ATR 缓冲系数为 0.3
+    "recovery_atr_buffer_multiplier": 0.3,
+    "add_immunity_mode": "until_current_candle_close", // 加仓后的风控豁免期：直到当前 K线收盘结束
+
+    // 黑天鹅紧急熔断参数
+    "emergency_enabled": true,            // 开启紧急熔断 (防闪崩/插大针)
+    "emergency_timeframe": "2h",          // 熔断侦测在更灵敏的 2 小时级别运行
+    "emergency_atr_period": 14,
+    "emergency_atr_multiplier": 8.0,      // 核心阈值：如果 2小时内价格向亏损方向暴跌/暴涨超过 8 倍 ATR，直接市价全平逃命
+    "emergency_vol_multiplier": 5.0,      // 辅助阈值：如果伴随 5倍以上巨量，同样触发熔断
+    "emergency_structure_lookback": 4,    // 结合过去 4 根 K线的结构一起判定
+
+    // 交易所物理兜底止损 (Hard Stop)
+    "exchange_hard_stop_enabled": true,   // 开启：程序会算出一个终极止损价，直接挂给交易所 (防止断网死机)
+    "hard_stop_timeframe": "8h",          // 参考 8H 的结构计算
+    "hard_stop_atr_period": 14,
+    "hard_stop_min_distance_pct": 0.05,   // 兜底止损距离当前价格最近不能少于 5%，防假突破频繁扫损
+    "hard_stop_atr_multiplier": 3.0,      // 如果找不到明确结构，兜底止损设在开仓价 3倍 ATR 以外
+
+    // API 并发与限流保护
+    "api_max_concurrency": 4,             // 币安 API 最大并发请求数为 4
+    "api_max_retries": 5,                 // 失败重试 5 次
+    "api_failure_threshold": 5,           // 连续失败 5 次触发断路器熔断
+    "api_circuit_breaker_cooldown_sec": 30, // 熔断后强制休息 30 秒
+    "api_min_interval_sec": 0.06,         // 两次 API 请求最小间隔 0.06 秒
+    "ws_stale_sec": 45.0,                 // Websocket 长连接 45 秒没数据判定为断线
+
+    "safe_mode_enabled": true,            // 开启安全模式
+    "stop_mode": "ema_structure_atr",     // 止损模式：EMA趋势过滤 + 结构位 + ATR综合判定
+    "state_schema_version": 3,            // 内部状态数据库版本号
+
+    // EMA 趋势辅助判定
+    "ema_fast_period": 26,                // 用于判定短期趋势的 EMA 周线 (26)
+    "ema_slow_period": 83,                // 用于判定长期趋势的 EMA 周线 (83)
+
+    // 结构破位的回看与确认参数
+    "structure_lookback": 12,             // 默认结构位寻找过去 12 根 K线
+    "structure_buffer_atr": 0.5,          // 价格突破结构位后，还要再超出 0.5倍 ATR，才算真破位
+    "t1_structure_lookback": 8,           // T1 止损的专属回看 K线数 (覆盖上面的配置)
+    "t2_structure_lookback": 12,          // T2 止损专属回看
+    "t2_atr_confirmation": 0.5,           // T2 破位需要 0.5倍 ATR 深度确认
+    "t3_structure_lookback": 20,          // T3 终极防线专属回看 (对应前文解析的 20根 8HK线)
+    "t3_ema_confirm_bars": 1,             // T3 全平时，需要 EMA 趋势确实处于逆转状态才执行
+
+    // 动态追踪保护
+    "dynamic_stop_atr_multiplier": 1.5,
+    "dynamic_stop_max_distance_pct": 0.12,// 动态止损线距离现价最远不能超过 12%
+    "auto_reset_state_on_add": true,      // 发生加仓时，重新计算开仓均价并重置风控周期
+
+    // 抄底防守功能 (针对左侧交易)
+    "entry_classification_enabled": true, // 开启开仓归类，区分是追涨趋势还是左侧抄底
+    "entry_classification_lookback_bars": 500, // 回看 500 根 K线确认是否处于抄底位
+    "entry_t3_atr_multiplier": 3.0,       // 若判定为抄底，跌破 3倍 ATR 无条件全平 (止错要快)
+    "entry_time_fallback_to_first_seen": true,
+
+    // 缓存参数 (极大地减少 API 请求，防封IP)
+    "positions_cache_ttl_sec": 5.0,       // 仓位快照缓存 5 秒
+    "ticker_cache_ttl_sec": 3.0,          // 现价行情缓存 3 秒
+    "orders_cache_ttl_sec": 10.0,         // 订单状态缓存 10 秒
+    "ohlcv_cache_ttl_sec": 30.0,          // K线数据强缓存 30 秒
+    "position_watch_interval_sec": 5.0,   // 风控主循环休息时间
+    "stop_maintenance_interval_sec": 60.0,// 每隔 60 秒审查并维护一次交易所兜底单
+
+    // 分批止盈机制 (Take Profit)
+    "take_profit_enabled": true,          // [开启] R 倍数动态止盈功能
+    "tp1_r_multiple": 1.0,                // 第一止盈位：盈亏比达到 1:1 时 (1R)
+    "tp2_r_multiple": 2.0,                // 第二止盈位：盈亏比达到 2:1 时 (2R)
+    "tp3_r_multiple": 3.0,                // 最终止盈位：盈亏比达到 3:1 时 (3R)
+    "tp1_ratio": 0.2,                     // 达到 1R 时，平仓 20%，并将止损推至保本
+    "tp2_ratio": 0.3,                     // 达到 2R 时，再平仓 30%，并将止损推至 TP1 锁住利润
+    "tp3_close_all": true,                // 达到 3R 时，全平清仓离场
+    "tp_breakeven_buffer_pct": 0.002,     // 保本单保护：止损推到开仓价外侧再加 0.2% 缓冲，用来覆盖手续费
+    "tp_profit_lock_buffer_pct": 0.001,   // 锁润保护：TP2推止损时加 0.1% 缓冲
+    "tp_use_closed_candle": false         // 止盈触发不等待K线收盘，达到价位立刻执行（防插针错过）
+  }
+}
