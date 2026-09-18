@@ -1513,15 +1513,15 @@ async def watch_symbol_position(exchange, symbol, side):
                 tp_keep = _tp3_remaining_ratio(conf)
                 tp3_action = "全平" if tp_keep <= 0 else f"保留{tp_keep:.0%}"
                 logger.info(
-                    f"[{symbol}] 🛡️🎯 止盈止损状态 | 方向:{'多' if side=='long' else '空'} | "
-                    f"当前价:{current_price:.8f} | 开仓价:{entry_price:.8f} | 仓位:{contracts:.8f} | "
-                    f"STOP(交易所实际):{_f(actual_stop, pos_state.get('last_stop_price') or 0):.8f} | "
-                    f"策略止损:{_f(strategy_stop_display, pos_state.get('last_stop_price') or 0):.8f} | "
-                    f"TP1:{_f(pos_state.get('tp1_price'), 0):.8f} → {float(conf.get('tp1_ratio', 0.20)):.0%} [{'已完成' if pos_state.get('tp1_triggered') else '待触发'}] | "
-                    f"TP2:{_f(pos_state.get('tp2_price'), 0):.8f} → {float(conf.get('tp2_ratio', 0.30)):.0%} [{'已完成' if pos_state.get('tp2_triggered') else '待触发'}] | "
-                    f"TP3:{_f(pos_state.get('tp3_price'), 0):.8f} → {tp3_action} [{'已完成' if pos_state.get('tp3_triggered') else '待触发'}] | "
-                    f"保护阶段:TP{tp_stage} | TP保护STOP:{_f(pos_state.get('tp_protected_stop'), 0):.8f} | "
-                    f"R:{_f(pos_state.get('tp_risk_distance'), 0):.8f} | 周期:{pos_state.get('risk_cycle_id')}"
+                    f"""[{symbol}] 🛡️🎯 止盈止损状态 | 方向:{'多' if side == 'long' else '空'}
+                当前价:{current_price:.8f} | 开仓价:{entry_price:.8f} | 仓位:{contracts:.8f}
+                STOP(交易所实际):{_f(actual_stop, pos_state.get('last_stop_price') or 0):.8f}
+                策略止损:{_f(strategy_stop_display, pos_state.get('last_stop_price') or 0):.8f}
+                TP1:{_f(pos_state.get('tp1_price'), 0):.8f} → {float(conf.get('tp1_ratio', 0.20)):.0%} [{'已完成' if pos_state.get('tp1_triggered') else '待触发'}]
+                TP2:{_f(pos_state.get('tp2_price'), 0):.8f} → {float(conf.get('tp2_ratio', 0.30)):.0%} [{'已完成' if pos_state.get('tp2_triggered') else '待触发'}]
+                TP3:{_f(pos_state.get('tp3_price'), 0):.8f} → {tp3_action} [{'已完成' if pos_state.get('tp3_triggered') else '待触发'}]
+                保护阶段:TP{tp_stage} | TP保护STOP:{_f(pos_state.get('tp_protected_stop'), 0):.8f}
+                R:{_f(pos_state.get('tp_risk_distance'), 0):.8f} | 周期:{pos_state.get('risk_cycle_id')}"""
                 )
 
             # ---------------- 分批止盈：1R/2R/3R ----------------
@@ -1722,14 +1722,15 @@ async def watch_symbol_position(exchange, symbol, side):
                 # 触发锁必须先落盘，再发通知/下单，彻底杜绝同一根K线重复20%推送。
                 if closed_ts > int(pos_state.get("last_checked_time", 0)):
                     logger.info(
-                        f"[{symbol}] 📊 V3止盈/止损监控 | 方向:{side} | 收盘:{closed_price:.4f} | 当前:{current_price:.4f} | \n"
-                        f"EMA26:{ema_fast:.4f} EMA83:{ema_slow:.4f} 趋势:{trend} ATR14:{atr:.4f} | \n"
-                        f"T1减仓位:{t1_low if side == 'long' else t1_high:.4f} (20%) | \n"
-                        f"T2减仓位:{t2_low if side == 'long' else t2_high:.4f} (30%) | \n"
-                        f"T3全平结构位:{t3_low if side == 'long' else t3_high:.4f} | \n"
-                        f"当前策略保护止损:{strategy_stop:.4f} | TP保护阶段:{int(pos_state.get('tp_protection_stage', 0))} | TP保护止损:{_f(pos_state.get('tp_protected_stop'), 0):.4f} | \n"
-                        f"TP1:{_f(pos_state.get('tp1_price'), 0):.4f} TP2:{_f(pos_state.get('tp2_price'), 0):.4f} TP3:{_f(pos_state.get('tp3_price'), 0):.4f}({_tp3_action_text(conf)}) | \n"
-                        f"周期:{pos_state.get('risk_cycle_id')}"
+                        f"""[{symbol}] 📊 V3止盈/止损监控 
+                        方向:{side} | 收盘:{closed_price:.4f} | 当前:{current_price:.4f} 
+                        EMA26:{ema_fast:.4f} EMA83:{ema_slow:.4f} 趋势:{trend} ATR14:{atr:.4f} 
+                        T1减仓位:{t1_low if side == 'long' else t1_high:.4f} (20%) 
+                        T2减仓位:{t2_low if side == 'long' else t2_high:.4f} (30%) 
+                        T3全平结构位:{t3_low if side == 'long' else t3_high:.4f} 
+                        当前策略保护止损:{strategy_stop:.4f} | TP保护阶段:{int(pos_state.get('tp_protection_stage', 0))} | TP保护止损:{_f(pos_state.get('tp_protected_stop'), 0):.4f} 
+                        TP1:{_f(pos_state.get('tp1_price'), 0):.4f} TP2:{_f(pos_state.get('tp2_price'), 0):.4f} TP3:{_f(pos_state.get('tp3_price'), 0):.4f}({_tp3_action_text(conf)}) 
+                        周期:{pos_state.get('risk_cycle_id')}"""
                     )
 
                     pos_state["last_checked_time"] = closed_ts
