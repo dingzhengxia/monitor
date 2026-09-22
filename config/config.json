@@ -347,20 +347,20 @@
     "orders_cache_ttl_sec": 10.0,
     "ohlcv_cache_ttl_sec": 30.0,
     "position_watch_interval_sec": 5.0,
-    "stop_maintenance_interval_sec": 60.0,
+    "stop_maintenance_interval_sec": 5.0,
     "take_profit_enabled": true,
-    "tp1_r_multiple": 2.0,
-    "tp2_r_multiple": 4.0,
-    "tp3_r_multiple": 6.0,
+    "tp1_r_multiple": 1.0,
+    "tp2_r_multiple": 2.0,
+    "tp3_r_multiple": 3.0,
     "tp1_ratio": 0.2,
     "tp2_ratio": 0.3,
-    "tp3_ratio": 0.3,
     "tp_breakeven_buffer_pct": 0.002,
     "tp_profit_lock_buffer_pct": 0.001,
     "tp_use_closed_candle": false,
     "tp_maker_only": true,
     "tp_limit_max_retries": 0,
     "tp_limit_timeout_sec": 10.0,
-    "tp_limit_check_interval_sec": 1.0
+    "tp_limit_check_interval_sec": 1.0,
+    "tp3_ratio": 0.2
   }
 }
