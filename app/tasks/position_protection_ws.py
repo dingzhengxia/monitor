@@ -109,6 +109,10 @@ DEFAULT_CONFIG = {
         "api_418_cooldown_sec": 60.0,
         "position_watch_interval_sec": 5.0,
         "stop_maintenance_interval_sec": 5.0,
+        # STOP只有达到有效推进距离才重挂，避免价格每跳一下就取消/重建。
+        # 不再使用旧的1.5%固定更新阈值。
+        "stop_min_update_pct": 0.0005,
+        "stop_min_update_atr_ratio": 0.05,
 
         "safe_mode_enabled": True,
         "safe_mode_failures": 5,
@@ -1202,28 +1206,58 @@ async def _ensure_disaster_stop(exchange, symbol, side, pos, current_price, conf
             )
 
         needs_update = False
+        material_move = False
         if stops:
             if existing_trigger is not None:
-                # 取消原来的 1.5% 固定更新阈值：只要 STOP 向盈利方向推进且精度后确实变化，就更新。
+                # 只允许STOP向盈利方向推进；反方向绝不放宽。
                 if side == "long":
                     if stop < existing_trigger:
                         stop = existing_trigger
-                    elif stop > existing_trigger:
-                        needs_update = True
                 else:
                     if stop > existing_trigger:
                         stop = existing_trigger
-                    elif stop < existing_trigger:
-                        needs_update = True
+
                 stop = float(exchange.price_to_precision(symbol, stop))
                 existing_trigger = float(exchange.price_to_precision(symbol, existing_trigger))
-                if stop == existing_trigger:
-                    needs_update = False
+
+                # 不再使用旧的1.5%固定阈值。
+                # 但也不能因为当前价/ATR轻微变化就每几个tick取消重挂。
+                # 有效推进距离 = max(价格百分比门槛, ATR比例门槛)。
+                try:
+                    atr_for_threshold = float(strategy.get("atr") or 0.0) if strategy else 0.0
+                except Exception:
+                    atr_for_threshold = 0.0
+                if atr_for_threshold <= 0 and ohlcv_rows:
+                    try:
+                        atr_for_threshold = float(_atr_from_rows(ohlcv_rows, int(conf.get("hard_stop_atr_period", 14))) or 0.0)
+                    except Exception:
+                        atr_for_threshold = 0.0
+
+                min_move_pct = max(0.0, float(conf.get("stop_min_update_pct", 0.0005)))
+                min_move_atr_ratio = max(0.0, float(conf.get("stop_min_update_atr_ratio", 0.05)))
+                min_move = max(existing_trigger * min_move_pct, atr_for_threshold * min_move_atr_ratio)
+                actual_move = (stop - existing_trigger) if side == "long" else (existing_trigger - stop)
+                material_move = actual_move >= min_move and actual_move > 0
+
+                if material_move:
+                    needs_update = True
+                else:
+                    # 细微变化直接沿用原STOP，不取消、不重挂。
+                    stop = existing_trigger
+                    logger.debug(
+                        f"[{symbol}] 🧊 STOP变化过小，保持原单 | "
+                        f"旧:{existing_trigger:.8f} 新:{stop:.8f} | "
+                        f"实际推进:{actual_move:.8f} | 最小有效推进:{min_move:.8f}"
+                    )
+
             if duplicate_stops:
+                # 重复STOP与价格推进阈值无关，必须立即清理，只保留一个。
                 logger.warning(f"[{symbol}] ⚠️ 检测到 {len(stops)} 个重复保护STOP，全部清理后只保留1个。")
                 needs_update = True
 
-        if stops and not force_replace and not needs_update:
+        # force_replace只用于新仓/加仓/仓位变化等风险周期变化。
+        # 如果STOP价格本身没有有效变化，则不因为force_replace而无意义地取消重挂。
+        if stops and not needs_update:
             return
 
         if stops:

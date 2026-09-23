@@ -361,6 +361,8 @@
     "tp_limit_max_retries": 0,
     "tp_limit_timeout_sec": 10.0,
     "tp_limit_check_interval_sec": 1.0,
-    "tp3_ratio": null
+    "tp3_ratio": 0.3,
+    "stop_min_update_pct": 0.0005,
+    "stop_min_update_atr_ratio": 0.05
   }
 }
