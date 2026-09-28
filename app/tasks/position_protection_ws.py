@@ -172,24 +172,45 @@ def _load_state():
 
 
 def _save_state(state):
-    """原子写入状态文件，避免进程中断时留下半截 JSON。"""
+    """优先原子写入；容器/绑定挂载环境 rename 失败时直接回退写入，确保风控触发状态不丢。"""
+    tmp_name = None
     try:
         STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-        fd, tmp_name = tempfile.mkstemp(prefix=STATE_FILE.name + ".", suffix=".tmp", dir=str(STATE_FILE.parent or Path(".")))
+        fd, tmp_name = tempfile.mkstemp(
+            prefix=STATE_FILE.name + ".", suffix=".tmp",
+            dir=str(STATE_FILE.parent or Path("."))
+        )
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as f:
                 json.dump(state, f, ensure_ascii=False, indent=2)
                 f.flush()
                 os.fsync(f.fileno())
             os.replace(tmp_name, STATE_FILE)
+            tmp_name = None
+            return True
         finally:
-            if os.path.exists(tmp_name):
+            if tmp_name and os.path.exists(tmp_name):
                 try:
                     os.unlink(tmp_name)
                 except OSError:
                     pass
+    except OSError as exc:
+        # Docker bind mount / 某些文件系统可能对 os.replace 返回 EBUSY(Errno 16)。
+        # 状态文件不能因此回退成旧状态，否则会导致 T1/T2 重复触发。
+        logger.warning(f"原子保存状态失败({exc})，回退直接写入状态文件。")
+        try:
+            STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+            with STATE_FILE.open("w", encoding="utf-8") as f:
+                json.dump(state, f, ensure_ascii=False, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+            return True
+        except Exception as fallback_exc:
+            logger.error(f"回退保存状态仍失败: {fallback_exc}")
+            return False
     except Exception as exc:
         logger.error(f"保存状态失败: {exc}")
+        return False
 
 
 def _state_key(symbol, side):
@@ -352,6 +373,13 @@ class Runtime:
         self.orders_cache = {}
         self.ohlcv_cache = {}
         self.last_circuit_notice = 0.0
+        # 仓位生命周期保护：防止“手动平仓 -> 数小时后重新开仓”继承旧风险周期。
+        self.previous_active_keys = set()
+        self.force_new_cycle_keys = set()
+        # 运行时一次性动作闩锁；即使状态文件短暂写入失败，也不能重复推送/减仓。
+        self.risk_action_latches = set()
+        # 状态文件不可写时，新周期仍保存在进程内，避免下一轮又读回旧周期。
+        self.runtime_position_states = {}
 
     def action_lock(self, symbol, side):
         key = (symbol, side)
@@ -487,6 +515,18 @@ async def _cancel_stop_orders(exchange, symbol, stops, conf):
             await _cancel_algo(exchange, symbol, algo_id, conf)
         except Exception:
             pass
+
+
+async def _cancel_program_stops_for_flat(exchange, symbol, side, conf):
+    """仓位已经归零时，清理本机器人旧的 STOP，防止重新开仓后继承旧兜底单。"""
+    try:
+        orders = await _get_open_algo_orders(exchange, symbol, conf, force=True)
+        stops = [o for o in orders if _is_program_stop(o, side, "BOTH")]
+        if stops:
+            await _cancel_stop_orders(exchange, symbol, stops, conf)
+            logger.warning(f"[{symbol}/{side}] 🧹 仓位归零，清理旧保护STOP {len(stops)} 张。")
+    except Exception as exc:
+        logger.warning(f"[{symbol}/{side}] 清理旧保护STOP失败: {exc}")
 
 
 async def _create_full_close_stop(exchange, symbol, position, side, stop_price, conf):
@@ -1492,9 +1532,12 @@ async def watch_symbol_position(exchange, symbol, side):
 
             pos = RUNTIME.global_positions_map.get((symbol, side))
             if not pos or _position_size(pos) <= 0:
+                key0 = _state_key(symbol, side)
                 state = _load_state()
-                state.pop(_state_key(symbol, side), None)
+                state.pop(key0, None)
+                RUNTIME.runtime_position_states.pop(_state_key(symbol, side), None)
                 _save_state(state)
+                await _cancel_program_stops_for_flat(exchange, symbol, side, conf)
                 await asyncio.sleep(5)
                 continue
 
@@ -1509,9 +1552,32 @@ async def watch_symbol_position(exchange, symbol, side):
                 last_heartbeat_time = now_time
 
             state = _load_state()
+
+            # 主控已经确认这是“平仓后重新出现”的仓位：直接删除旧风险周期。
+            # 这一步优先于 entryPrice/openTime 判断，解决“同价重开”无法识别的问题。
+            force_new_cycle = key in RUNTIME.force_new_cycle_keys
+            if force_new_cycle:
+                state.pop(key, None)
+                RUNTIME.runtime_position_states.pop(key, None)
+                logger.warning(f"[{symbol}/{side}] ♻️ 新开仓生命周期重置：清除旧 T1/T2/T3、TP、抄底及保护STOP状态。")
+                await _cancel_program_stops_for_flat(exchange, symbol, side, conf)
+                try:
+                    await _cancel_bot_reduce_orders(exchange, symbol, side, conf, reason="新风险周期启动")
+                except Exception as cleanup_exc:
+                    logger.warning(f"[{symbol}/{side}] 新周期旧减仓单清理异常: {cleanup_exc}")
+
+            # 如果状态文件暂时不可写，优先使用本进程的新周期状态，绝不读回旧周期；
+            # 但仍然调用 reconcile，以便正常处理真实加仓/减仓和仓位版本变化。
+            if key in RUNTIME.runtime_position_states and not force_new_cycle:
+                state[key] = RUNTIME.runtime_position_states[key]
+
             pos_state, changed = _reconcile_position_state(state, key, symbol, side, contracts, timeframe, position=pos)
-            if changed:
+            RUNTIME.runtime_position_states[key] = pos_state
+
+            if changed or force_new_cycle:
                 _save_state(state)
+                # 即使磁盘写入失败，也不再重复“初始化新周期”；内存状态由 runtime_position_states 接管。
+                RUNTIME.force_new_cycle_keys.discard(key)
 
             n1, n2, n3 = int(conf.get("n1_bars", 7)), int(conf.get("n2_bars", 26)), int(conf.get("n3_bars", 83))
             limit = max(n3 + 25, 120, int(conf.get("entry_classification_lookback_bars", 500)))
@@ -1805,6 +1871,14 @@ async def watch_symbol_position(exchange, symbol, side):
                               and not pos_state.get("t3_triggered") and not pos_state.get("t3_waived"))
                     strategy_stop = float(strategy["short_structure"])
 
+                # 新仓保护：T1/T2/T3 只允许检查“开仓之后才形成/收盘”的K线。
+                # 例如上一仓已在上一根K线跌破T1，用户数小时后重新开多，不能因为历史K线仍是破位状态
+                # 就在新仓刚开完时立即再减20%。entry_time_ms 不可靠时已由 reconcile 回退到首次发现时间。
+                entry_time_ms = int(pos_state.get("entry_time_ms") or 0)
+                candle_is_after_entry = (entry_time_ms <= 0) or (int(closed_ts) >= entry_time_ms)
+                if not candle_is_after_entry:
+                    t1_hit = t2_hit = t3_hit = False
+
                 # 触发锁必须先落盘，再发通知/下单，彻底杜绝同一根K线重复20%推送。
                 if closed_ts > int(pos_state.get("last_checked_time", 0)):
                     logger.info(
@@ -1813,7 +1887,8 @@ async def watch_symbol_position(exchange, symbol, side):
                         f"T1减仓位:{t1_low if side=='long' else t1_high:.4f} (20%) | "
                         f"T2减仓位:{t2_low if side=='long' else t2_high:.4f} (30%) | "
                         f"T3全平结构位:{t3_low if side=='long' else t3_high:.4f} | "
-                        f"当前策略保护止损:{strategy_stop:.4f} | TP保护阶段:{int(pos_state.get('tp_protection_stage',0))} | TP保护止损:{_f(pos_state.get('tp_protected_stop'),0):.4f} | "
+                        f"当前策略保护止损:{strategy_stop:.4f} | 新仓K线保护:{'已生效' if candle_is_after_entry else '等待开仓后新K线'} | "
+                        f"TP保护阶段:{int(pos_state.get('tp_protection_stage',0))} | TP保护止损:{_f(pos_state.get('tp_protected_stop'),0):.4f} | "
                         f"TP1:{_f(pos_state.get('tp1_price'),0):.4f} TP2:{_f(pos_state.get('tp2_price'),0):.4f} 躺平:{_f(pos_state.get('tp3_price'),0):.4f}({_tp3_action_text(conf)}) | "
                         f"周期:{pos_state.get('risk_cycle_id')}"
                     )
@@ -1841,6 +1916,11 @@ async def watch_symbol_position(exchange, symbol, side):
 
                         # T3：EMA趋势反转 + 大结构失守 -> 全平
                         if t3_hit:
+                            action_key = (symbol, side, str(pos_state.get("risk_cycle_id")), "T3")
+                            if action_key in RUNTIME.risk_action_latches:
+                                logger.warning(f"[{symbol}/{side}] 🛑 T3本风险周期已执行/已锁定，跳过重复动作。")
+                                continue
+                            RUNTIME.risk_action_latches.add(action_key)
                             await _cancel_bot_reduce_orders(exchange, symbol, side, conf, reason="T3全平前")
                             pos_state["t3_triggered"] = True
                             state[key] = pos_state
@@ -1855,6 +1935,11 @@ async def watch_symbol_position(exchange, symbol, side):
 
                         # T2：中结构失守 + ATR确认 + 趋势过滤 -> 30%
                         elif t2_hit:
+                            action_key = (symbol, side, str(pos_state.get("risk_cycle_id")), "T2")
+                            if action_key in RUNTIME.risk_action_latches:
+                                logger.warning(f"[{symbol}/{side}] 🛑 T2本风险周期已执行/已锁定，跳过重复动作。")
+                                continue
+                            RUNTIME.risk_action_latches.add(action_key)
                             pos_state["t2_triggered"] = True
                             state[key] = pos_state
                             _save_state(state)
@@ -1870,6 +1955,13 @@ async def watch_symbol_position(exchange, symbol, side):
 
                         # T1：小结构破位 -> 20%，不再用MA直接触发
                         elif t1_hit:
+                            # T1 是“一次性事件”，不能只依赖 JSON 状态文件。
+                            # 文件保存失败/容器文件系统异常时，内存闩锁仍能阻止重复20%减仓。
+                            action_key = (symbol, side, str(pos_state.get("risk_cycle_id")), "T1")
+                            if action_key in RUNTIME.risk_action_latches:
+                                logger.warning(f"[{symbol}/{side}] 🛑 T1本风险周期已执行/已锁定，跳过重复减仓。")
+                                continue
+                            RUNTIME.risk_action_latches.add(action_key)
                             pos_state["t1_triggered"] = True
                             state[key] = pos_state
                             _save_state(state)
@@ -1952,6 +2044,33 @@ async def protect_positions_main(exchange, config=None):
                 active.add(key)
 
             RUNTIME.global_positions_map = pos_map
+
+            # 3.5 仓位生命周期：只要主控观察到某方向从“有仓”变成“无仓”，
+            # 就立即标记下一次重新出现为全新风险周期。这样手动平仓后再开仓，
+            # 即使旧 state 文件还没来得及清理，也绝不会继承 T1/T2/TP/抄底状态。
+            disappeared = RUNTIME.previous_active_keys - active
+            for old_key in disappeared:
+                RUNTIME.force_new_cycle_keys.add(old_key)
+                # 旧周期的一次性动作闩锁也必须失效。
+                RUNTIME.risk_action_latches = {
+                    x for x in RUNTIME.risk_action_latches
+                    if not (isinstance(x, tuple) and len(x) >= 2 and x[:2] == old_key)
+                }
+                old_symbol, old_side = old_key
+                try:
+                    await _cancel_bot_reduce_orders(
+                        exchange, old_symbol, old_side, conf, reason="仓位已手动平仓，清理旧减仓单"
+                    )
+                    await _cancel_program_stops_for_flat(exchange, old_symbol, old_side, conf)
+                    RUNTIME.runtime_position_states.pop(_state_key(old_symbol, old_side), None)
+                    old_state = _load_state()
+                    old_state.pop(_state_key(old_symbol, old_side), None)
+                    _save_state(old_state)
+                except Exception as lifecycle_exc:
+                    logger.warning(f"[{old_symbol}/{old_side}] 平仓后生命周期清理异常: {lifecycle_exc}")
+                logger.info(f"[{old_symbol}/{old_side}] 🧹 检测到仓位已消失：下一次重新开仓强制建立全新风险周期。")
+
+            RUNTIME.previous_active_keys = set(active)
 
             # 4. 按 symbol + side 调度，完整支持 Binance Hedge Mode 同币双向持仓
             for symbol, side in active:
