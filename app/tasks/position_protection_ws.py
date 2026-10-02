@@ -27,6 +27,20 @@ from loguru import logger
 
 from app.services.notification_service import send_alert
 
+# 风控动作运行时锁：防止异步循环/并发检查导致 TP/T1/T2/T3 重复执行
+_ACTION_EXECUTION_LOCK = set()
+
+def _risk_action_lock_key(symbol, side, pos_state, action):
+    return f"{symbol}:{side}:{pos_state.get('risk_cycle_id', 'unknown')}:{action}"
+
+def _try_lock_risk_action(symbol, side, pos_state, action):
+    key = _risk_action_lock_key(symbol, side, pos_state, action)
+    if key in _ACTION_EXECUTION_LOCK:
+        return False
+    _ACTION_EXECUTION_LOCK.add(key)
+    return True
+
+
 STATE_FILE = Path("position_protection_state.json")
 CONFIG_FILE = Path("config/config.json")
 if not CONFIG_FILE.exists():
@@ -1699,6 +1713,8 @@ async def watch_symbol_position(exchange, symbol, side):
                             # 重新按最新价格确认，防止等待锁期间价格已经回落。
                             tp_level = _take_profit_hit(pos_state, side, current_price)
                             if tp_level == 3:
+                                if not _try_lock_risk_action(symbol, side, pos_state, "TP3"):
+                                    return
                                 tp3_keep = _tp3_remaining_ratio(conf)
                                 pos_state["tp3_triggered"] = True
                                 state[key] = pos_state; _save_state(state)
@@ -1737,7 +1753,7 @@ async def watch_symbol_position(exchange, symbol, side):
                                     if after <= 1e-10:
                                         state.pop(key, None); _save_state(state); return
                                     logger.success(f"[{symbol}] 🔐 躺平完成：剩余{after}仓位继续由移动STOP保护利润")
-                            elif tp_level == 2 and not pos_state.get("tp2_triggered"):
+                            elif tp_level == 2 and not pos_state.get("tp2_triggered") and _try_lock_risk_action(symbol, side, pos_state, "TP2"):
                                 pos_state["tp2_triggered"] = True
                                 state[key] = pos_state; _save_state(state)
                                 ratio = float(conf.get("tp2_ratio", 0.30))
@@ -1753,7 +1769,7 @@ async def watch_symbol_position(exchange, symbol, side):
                                 pos_state["tp_protection_stage"] = 2
                                 state[key] = pos_state; _save_state(state)
                                 logger.success(f"[{symbol}] 🔐 TP2完成：下一轮交易所STOP抬到 TP1 上方锁定利润")
-                            elif tp_level == 1 and not pos_state.get("tp1_triggered"):
+                            elif tp_level == 1 and not pos_state.get("tp1_triggered") and _try_lock_risk_action(symbol, side, pos_state, "TP1"):
                                 pos_state["tp1_triggered"] = True
                                 state[key] = pos_state; _save_state(state)
                                 ratio = float(conf.get("tp1_ratio", 0.20))
