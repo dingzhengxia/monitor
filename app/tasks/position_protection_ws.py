@@ -52,7 +52,7 @@ DEFAULT_CONFIG = {
         "enabled": True,
         "state_schema_version": 3,
         "stop_mode": "ema_structure_atr",
-        "timeframe": "1h",
+        "timeframe": "2h",
         "n1_bars": 7,
         "n2_bars": 26,
         "n3_bars": 83,
@@ -60,10 +60,11 @@ DEFAULT_CONFIG = {
         "ema_slow_period": 83,
         "structure_lookback": 12,
         "structure_buffer_atr": 0.50,
-        "t1_structure_lookback": 8,
-        "t2_structure_lookback": 12,
+        "t1_structure_lookback": 7,
+        "t1_atr_confirmation": 0.50,
+        "t2_structure_lookback": 26,
         "t2_atr_confirmation": 0.50,
-        "t3_structure_lookback": 20,
+        "t3_structure_lookback": 83,
         "t3_ema_confirm_bars": 1,
         "dynamic_stop_atr_multiplier": 1.50,
         "dynamic_stop_max_distance_pct": 0.12,
@@ -1381,6 +1382,8 @@ def _reconcile_position_state(state, key, symbol, side, contracts, timeframe, po
     ps.setdefault("entry_time_ms", _position_open_time_ms(position) or int(time.time() * 1000))
     ps.setdefault("entry_time_source", "exchange" if _position_open_time_ms(position) else "first_seen")
     ps.setdefault("entry_classification", None)
+    ps.setdefault("t1_realtime_armed", False)
+    ps.setdefault("t1_realtime_armed_initialized", False)
     ps.setdefault("risk_entry_price", _f((position or {}).get("entryPrice"), 0.0))
     ps.setdefault("risk_entry_price_source", "position_average")
     ps.setdefault("t1_triggered", bool(ps.get("t1_done")))
@@ -1439,6 +1442,8 @@ def _reconcile_position_state(state, key, symbol, side, contracts, timeframe, po
             "entry_time_ms": current_open_time or int(time.time() * 1000),
             "entry_time_source": "exchange" if current_open_time else "reopen_detected",
             "entry_classification": None,
+            "t1_realtime_armed": False,
+            "t1_realtime_armed_initialized": False,
             "risk_entry_price": current_entry_price or None,
             "risk_entry_price_source": "position_average",
             "processed_entry_version": 0,
@@ -1542,7 +1547,7 @@ async def watch_symbol_position(exchange, symbol, side):
                 await asyncio.sleep(5)
                 continue
 
-            timeframe = str(conf.get("timeframe", "1h"))
+            timeframe = str(conf.get("timeframe", "2h"))
 
             pos = RUNTIME.global_positions_map.get((symbol, side))
             if not pos or _position_size(pos) <= 0:
@@ -1853,9 +1858,9 @@ async def watch_symbol_position(exchange, symbol, side):
                 closed_price = strategy["last_close"]
                 trend = strategy["trend"]
 
-                t1_lookback = int(conf.get("t1_structure_lookback", 8))
-                t2_lookback = int(conf.get("t2_structure_lookback", 12))
-                t3_lookback = int(conf.get("t3_structure_lookback", 20))
+                t1_lookback = int(conf.get("t1_structure_lookback", 7))
+                t2_lookback = int(conf.get("t2_structure_lookback", 26))
+                t3_lookback = int(conf.get("t3_structure_lookback", 83))
                 closed_df = strategy["df"]
                 if len(closed_df) < max(t3_lookback + 1, 3):
                     raise RuntimeError("结构K线不足")
@@ -1870,17 +1875,26 @@ async def watch_symbol_position(exchange, symbol, side):
                 t3_low = float(prior_df.iloc[-t3_lookback:]["low"].min())
                 t3_high = float(prior_df.iloc[-t3_lookback:]["high"].max())
                 buffer = atr * float(conf.get("structure_buffer_atr", 0.50))
+                t1_atr_buffer = atr * float(conf.get("t1_atr_confirmation", 0.50))
                 atr_confirm = atr * float(conf.get("t2_atr_confirmation", 0.50))
 
+                # T1：实时价格触发“小结构 + 独立 ATR 缓冲”，不再等待K线收盘。
+                # T2/T3 继续保持原来的“收盘价确认”逻辑。
                 if side == "long":
-                    t1_hit = closed_price <= t1_low - buffer and not pos_state.get("t1_done") and not pos_state.get("t1_triggered")
+                    t1_level = t1_low - t1_atr_buffer
+                    t1_hit = (current_price <= t1_level
+                              and not pos_state.get("t1_done")
+                              and not pos_state.get("t1_triggered"))
                     t2_hit = (closed_price <= t2_low - max(buffer, atr_confirm) and trend in ("bear", "neutral")
                               and not pos_state.get("t2_done") and not pos_state.get("t2_triggered"))
                     t3_hit = (closed_price <= t3_low - buffer and ema_fast < ema_slow
                               and not pos_state.get("t3_triggered") and not pos_state.get("t3_waived"))
                     strategy_stop = float(strategy["long_structure"])
                 else:
-                    t1_hit = closed_price >= t1_high + buffer and not pos_state.get("t1_done") and not pos_state.get("t1_triggered")
+                    t1_level = t1_high + t1_atr_buffer
+                    t1_hit = (current_price >= t1_level
+                              and not pos_state.get("t1_done")
+                              and not pos_state.get("t1_triggered"))
                     t2_hit = (closed_price >= t2_high + max(buffer, atr_confirm) and trend in ("bull", "neutral")
                               and not pos_state.get("t2_done") and not pos_state.get("t2_triggered"))
                     t3_hit = (closed_price >= t3_high + buffer and ema_fast > ema_slow
@@ -1892,15 +1906,43 @@ async def watch_symbol_position(exchange, symbol, side):
                 # 就在新仓刚开完时立即再减20%。entry_time_ms 不可靠时已由 reconcile 回退到首次发现时间。
                 entry_time_ms = int(pos_state.get("entry_time_ms") or 0)
                 candle_is_after_entry = (entry_time_ms <= 0) or (int(closed_ts) >= entry_time_ms)
-                if not candle_is_after_entry:
-                    t1_hit = t2_hit = t3_hit = False
 
-                # 触发锁必须先落盘，再发通知/下单，彻底杜绝同一根K线重复20%推送。
-                if closed_ts > int(pos_state.get("last_checked_time", 0)):
+                # T1 使用实时价格，但防止“旧仓已破位 -> 几小时后重新开仓”立即继承旧破位。
+                # 如果新仓开仓价本身已经在 T1 线外，先不触发；只有价格重新回到线内后再次突破才触发。
+                t1_armed = bool(pos_state.get("t1_realtime_armed", False))
+                entry_price_for_t1 = _f(pos_state.get("risk_entry_price"), 0.0)
+                if entry_price_for_t1 <= 0:
+                    entry_price_for_t1 = _f(pos_state.get("last_position_entry_price"), 0.0)
+                if entry_price_for_t1 > 0 and not pos_state.get("t1_realtime_armed_initialized", False):
+                    if side == "long":
+                        t1_armed = entry_price_for_t1 > t1_level
+                    else:
+                        t1_armed = entry_price_for_t1 < t1_level
+                    pos_state["t1_realtime_armed"] = t1_armed
+                    pos_state["t1_realtime_armed_initialized"] = True
+
+                # 已经重新回到结构线内，重新武装 T1；随后实时再次突破即可触发。
+                if side == "long" and current_price > t1_level:
+                    t1_armed = True
+                elif side == "short" and current_price < t1_level:
+                    t1_armed = True
+                pos_state["t1_realtime_armed"] = t1_armed
+
+                t1_hit = t1_hit and t1_armed
+                # T2/T3 仍必须等待开仓后的已收盘K线。
+                if not candle_is_after_entry:
+                    t2_hit = t3_hit = False
+
+                # T1 为实时触发；T2/T3 只能在新收盘K线出现时触发。
+                # 触发锁先落盘，再发通知/下单，彻底杜绝同一风险周期重复20%推送。
+                new_closed_candle = closed_ts > int(pos_state.get("last_checked_time", 0))
+                t2_hit = t2_hit and new_closed_candle
+                t3_hit = t3_hit and new_closed_candle
+                if new_closed_candle or t1_hit:
                     logger.info(
                         f"[{symbol}] 📊 V3止盈/止损监控 | 方向:{side} | 收盘:{closed_price:.4f} | 当前:{current_price:.4f} | "
                         f"EMA26:{ema_fast:.4f} EMA83:{ema_slow:.4f} 趋势:{trend} ATR14:{atr:.4f} | "
-                        f"T1减仓位:{t1_low if side=='long' else t1_high:.4f} (20%) | "
+                        f"T1结构位:{t1_low if side=='long' else t1_high:.4f} | T1触发线:{t1_level:.4f} | T1实时状态:{'已破' if t1_hit else ('待触发' if t1_armed else '未武装')} | "
                         f"T2减仓位:{t2_low if side=='long' else t2_high:.4f} (30%) | "
                         f"T3全平结构位:{t3_low if side=='long' else t3_high:.4f} | "
                         f"当前策略保护止损:{strategy_stop:.4f} | 新仓K线保护:{'已生效' if candle_is_after_entry else '等待开仓后新K线'} | "
@@ -1909,8 +1951,9 @@ async def watch_symbol_position(exchange, symbol, side):
                         f"周期:{pos_state.get('risk_cycle_id')}"
                     )
 
-                    pos_state["last_checked_time"] = closed_ts
-                    pos_state["last_closed_candle_ts"] = closed_ts
+                    if new_closed_candle:
+                        pos_state["last_checked_time"] = closed_ts
+                        pos_state["last_closed_candle_ts"] = closed_ts
                     pos_state["last_risk_check_time"] = int(time.time())
                     pos_state["risk_state"] = {
                         "t1": "triggered" if t1_hit else ("done" if pos_state.get("t1_done") else "normal"),
@@ -1983,8 +2026,8 @@ async def watch_symbol_position(exchange, symbol, side):
                             _save_state(state)
                             qty = min(current_contracts, (_f(pos_state.get("base_contracts"), current_contracts)) * float(conf.get("tier1_ratio", 0.20)))
                             msg = (f"[{symbol}] 📉 T1结构破位，执行20%减仓！周期:{pos_state.get('risk_cycle_id')} | "
-                                   f"收盘:{closed_price:.4f} 结构:{t1_low if side=='long' else t1_high:.4f} "
-                                   f"ATR:{atr:.4f} EMA26/83:{ema_fast:.4f}/{ema_slow:.4f} 当前:{current_price:.4f}")
+                                   f"当前:{current_price:.4f} 结构:{t1_low if side=='long' else t1_high:.4f} 触发线:{t1_level:.4f} "
+                                   f"ATR:{atr:.4f} EMA26/83:{ema_fast:.4f}/{ema_slow:.4f}")
                             logger.warning(msg)
                             send_alert(full_config, "风控提示: T1 减仓", msg, symbol=symbol)
                             _, after = await _limit_reduce_with_maker_retry(exchange, symbol, side, fresh, qty, "T1结构减仓", conf, int(pos_state.get("position_version", 0)), pos_state)
