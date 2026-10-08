@@ -348,6 +348,8 @@
     "stop_maintenance_interval_sec": 5.0,
     "stop_min_update_pct": 0.0005,
     "stop_min_update_atr_ratio": 0.05,
-    "price_source_tolerance_pct": 0.01
+    "price_source_tolerance_pct": 0.01,
+    "profit_protection_enabled": true,
+    "profit_protection_trigger_r": 0.5
   }
 }
